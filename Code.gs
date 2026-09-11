@@ -134,7 +134,7 @@ function uploadExcelData(newDataArray, targetSheetName) {
   // 1차: 한 번에 일괄 저장 시도 (빠른 경로)
   try {
     sheet.getRange(startRow, 1, rowsToAppend.length, sheetHeaders.length).setValues(rowsToAppend);
-    return `성공! 총 ${rowsToAppend.length}건의 데이터가 시트 맨 아래에 추가되었습니다. (제외된 빈 행: ${skippedCount}개)`;
+    return `[코드 v2] 성공! 총 ${rowsToAppend.length}건의 데이터가 시트 맨 아래에 추가되었습니다. (제외된 빈 행: ${skippedCount}개)`;
   } catch (bulkError) {
     // 일괄 저장이 실패하면(주로 드롭다운 등 데이터 확인 규칙 위반), 한 줄씩 다시 시도해서
     // 문제 없는 행은 저장하고, 규칙에 위반되는 행만 걸러내어 사용자에게 알려줍니다.
@@ -156,7 +156,7 @@ function uploadExcelData(newDataArray, targetSheetName) {
     }
 
     const omitted = (rowsToAppend.length - successCount) - failedRows.length;
-    let msg = `일부만 저장되었습니다. 성공 ${successCount}건 / 실패 ${rowsToAppend.length - successCount}건 (제외된 빈 행: ${skippedCount}개)\n\n`
+    let msg = `[코드 v2] 일부만 저장되었습니다. 성공 ${successCount}건 / 실패 ${rowsToAppend.length - successCount}건 (제외된 빈 행: ${skippedCount}개)\n\n`
       + `실패 사유(주로 드롭다운 목록에 없는 값): \n${failedRows.join('\n')}`
       + (omitted > 0 ? `\n...외 ${omitted}건 더` : '');
 
