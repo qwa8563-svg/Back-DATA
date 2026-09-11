@@ -132,8 +132,11 @@ function uploadExcelData(newDataArray, targetSheetName) {
   const startRow = sheet.getLastRow() + 1;
 
   // 1차: 한 번에 일괄 저장 시도 (빠른 경로)
+  // setValues()는 대기열에만 쌓이고 스크립트 종료 시점에야 실제 반영되므로,
+  // flush()로 즉시 반영시켜야 검증 규칙 위반 에러를 이 자리에서 catch할 수 있습니다.
   try {
     sheet.getRange(startRow, 1, rowsToAppend.length, sheetHeaders.length).setValues(rowsToAppend);
+    SpreadsheetApp.flush();
     return `[코드 v2] 성공! 총 ${rowsToAppend.length}건의 데이터가 시트 맨 아래에 추가되었습니다. (제외된 빈 행: ${skippedCount}개)`;
   } catch (bulkError) {
     // 일괄 저장이 실패하면(주로 드롭다운 등 데이터 확인 규칙 위반), 한 줄씩 다시 시도해서
@@ -146,6 +149,7 @@ function uploadExcelData(newDataArray, targetSheetName) {
     for (let i = 0; i < rowsToAppend.length; i++) {
       try {
         sheet.getRange(currentRow, 1, 1, sheetHeaders.length).setValues([rowsToAppend[i]]);
+        SpreadsheetApp.flush();
         successCount++;
         currentRow++;
       } catch (rowError) {
