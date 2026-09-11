@@ -62,7 +62,6 @@ function uploadExcelData(newDataArray, targetSheetName) {
     throw new Error(`진단 에러: '${targetSheetName}' 탭에 1행(제목줄) 데이터가 존재하지 않습니다.`);
   }
 
-  const sheetHeaders = existingData[0];
   const rowsToAppend = [];
   let skippedCount = 0;
 
@@ -71,13 +70,26 @@ function uploadExcelData(newDataArray, targetSheetName) {
   const normalize = s => (s === null || s === undefined) ? '' : String(s).trim().replace(/\s+/g, '');
   const excelHeaders = (newDataArray[0] || []).map(normalize);
 
-  // colMap[시트 열 인덱스] = 매칭되는 엑셀 열 인덱스 (없으면 -1)
-  const colMap = new Array(sheetHeaders.length).fill(-1);
+  // 시트 1행이 "AS 매출 K테크" 같은 제목줄이고 실제 컬럼명은 2행 이후에 있는 경우가 있으므로,
+  // 상위 몇 개 행 중 엑셀 헤더와 가장 많이 일치하는 행을 실제 헤더 행으로 채택합니다.
+  const HEADER_SCAN_ROWS = Math.min(5, existingData.length);
+  let sheetHeaders = existingData[0];
+  let colMap = [];
   let nameMatchCount = 0;
-  for (let s = 1; s < sheetHeaders.length; s++) {
-    const idx = excelHeaders.indexOf(normalize(sheetHeaders[s]));
-    colMap[s] = idx;
-    if (idx !== -1) nameMatchCount++;
+  for (let r = 0; r < HEADER_SCAN_ROWS; r++) {
+    const candidateHeaders = existingData[r];
+    const candidateColMap = new Array(candidateHeaders.length).fill(-1);
+    let candidateMatchCount = 0;
+    for (let s = 1; s < candidateHeaders.length; s++) {
+      const idx = excelHeaders.indexOf(normalize(candidateHeaders[s]));
+      candidateColMap[s] = idx;
+      if (idx !== -1) candidateMatchCount++;
+    }
+    if (candidateMatchCount > nameMatchCount) {
+      nameMatchCount = candidateMatchCount;
+      sheetHeaders = candidateHeaders;
+      colMap = candidateColMap;
+    }
   }
   // 헤더명이 2개 이상 일치하면 이름 매칭 사용, 그렇지 않으면(제목줄이 없는 단순 엑셀 등) 기존 순서 매칭으로 대체
   const useNameMapping = nameMatchCount >= 2;
