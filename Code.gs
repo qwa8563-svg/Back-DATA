@@ -162,7 +162,11 @@ function uploadExcelData(newDataArray, targetSheetName) {
     const omitted = (rowsToAppend.length - successCount) - failedRows.length;
     let msg = `[코드 v2] 일부만 저장되었습니다. 성공 ${successCount}건 / 실패 ${rowsToAppend.length - successCount}건 (제외된 빈 행: ${skippedCount}개)\n\n`
       + `실패 사유(주로 드롭다운 목록에 없는 값): \n${failedRows.join('\n')}`
-      + (omitted > 0 ? `\n...외 ${omitted}건 더` : '');
+      + (omitted > 0 ? `\n...외 ${omitted}건 더` : '')
+      + `\n\n[진단] 시트 헤더: ${sheetHeaders.map((h, idx) => `${idx}:${h}`).join(' | ')}`
+      + `\n[진단] 엑셀 헤더: ${excelHeaders.map((h, idx) => `${idx}:${h}`).join(' | ')}`
+      + `\n[진단] 이름매칭 사용: ${useNameMapping} (일치 ${nameMatchCount}개)`
+      + `\n[진단] 실패한 행의 실제 기록값: ${JSON.stringify(rowsToAppend[0])}`;
 
     if (successCount === 0) {
       throw new Error(msg);
