@@ -40,7 +40,19 @@ function saveMultiData(data, targetSheetName) {
       throw new Error("알 수 없는 양식입니다.");
   }
 
+  const prevLastRow = sheet.getLastRow();
   sheet.appendRow(rowData);
+  const newRow = sheet.getLastRow();
+
+  // A열(No.) 수식은 행마다 개별적으로 걸려있어 새 행엔 복사되어 있지 않으므로,
+  // 바로 위 행의 수식을 그대로 복사해 붙여넣습니다(상대참조라 행 번호는 자동으로 맞춰집니다).
+  if (prevLastRow >= 1) {
+    const aboveFormula = sheet.getRange(prevLastRow, 1).getFormulaR1C1();
+    if (aboveFormula) {
+      sheet.getRange(newRow, 1).setFormulaR1C1(aboveFormula);
+    }
+  }
+
   return `${targetSheetName} 시트에 성공적으로 저장되었습니다!`;
 }
 
@@ -143,11 +155,19 @@ function uploadExcelData(newDataArray, targetSheetName) {
 
   const startRow = sheet.getLastRow() + 1;
 
+  // A열(No.) 수식은 행마다 개별적으로 걸려있어 새 행엔 복사되어 있지 않으므로,
+  // 바로 위 행의 수식을 그대로 복사해 붙여넣습니다(상대참조라 행 번호는 자동으로 맞춰집니다).
+  const aboveFormula = startRow > 1 ? sheet.getRange(startRow - 1, 1).getFormulaR1C1() : '';
+
   // 1차: 한 번에 일괄 저장 시도 (빠른 경로)
   // setValues()는 대기열에만 쌓이고 스크립트 종료 시점에야 실제 반영되므로,
   // flush()로 즉시 반영시켜야 검증 규칙 위반 에러를 이 자리에서 catch할 수 있습니다.
   try {
     sheet.getRange(startRow, 1, rowsToAppend.length, sheetHeaders.length).setValues(rowsToAppend);
+    if (aboveFormula) {
+      const formulas = rowsToAppend.map(() => [aboveFormula]);
+      sheet.getRange(startRow, 1, rowsToAppend.length, 1).setFormulasR1C1(formulas);
+    }
     SpreadsheetApp.flush();
     return `[코드 v2] 성공! 총 ${rowsToAppend.length}건의 데이터가 시트 맨 아래에 추가되었습니다. (제외된 빈 행: ${skippedCount}개)`;
   } catch (bulkError) {
@@ -161,6 +181,9 @@ function uploadExcelData(newDataArray, targetSheetName) {
     for (let i = 0; i < rowsToAppend.length; i++) {
       try {
         sheet.getRange(currentRow, 1, 1, sheetHeaders.length).setValues([rowsToAppend[i]]);
+        if (aboveFormula) {
+          sheet.getRange(currentRow, 1).setFormulaR1C1(aboveFormula);
+        }
         SpreadsheetApp.flush();
         successCount++;
         currentRow++;
