@@ -493,3 +493,67 @@ function previewBlankNoRows(targetSheetName) {
   Logger.log(`No.가 비어있는 행 ${lines.length}건:\n` + lines.join('\n'));
   return msg;
 }
+
+// ---------------------------------------------------------------------------
+// previewBlankNoRows()로 확인한 "No.가 비어있는 행"은 대부분 중복이 아니라, 예전에
+// (이번 수정 이전에) 다른 방식으로 추가되면서 A열 번호 수식만 채워지지 않은 정상 데이터입니다.
+// 이 함수는 내용은 전혀 건드리지 않고, 그 행들의 A열에 번호 수식만 채워 넣습니다.
+// (진짜 중복 여부는 이 함수가 아니라 previewDuplicateCleanup()으로 확인하세요 —
+//  그 함수는 No. 값과 상관없이 접수일/제조번호/증상 기준으로 실제 중복을 찾습니다.)
+// Apps Script 편집기에서 backfillNoFormulas() 를 선택해 실행하세요.
+// ---------------------------------------------------------------------------
+function backfillNoFormulas(targetSheetName) {
+  targetSheetName = targetSheetName || '[K] AS/매출';
+  const ss = SpreadsheetApp.openById('1EqKrXRWWuDZv9j11iUHDOQmN0cDwAp47dBWvv1SyV7Q');
+  const sheet = ss.getSheetByName(targetSheetName);
+  if (!sheet) throw new Error(`'${targetSheetName}' 탭을 찾을 수 없습니다.`);
+
+  const data = sheet.getDataRange().getValues();
+  if (data.length === 0) return '데이터가 없습니다.';
+
+  const HEADER_SCAN_ROWS = Math.min(5, data.length);
+  let headerRowIdx = 0;
+  for (let r = 0; r < HEADER_SCAN_ROWS; r++) {
+    if (data[r].indexOf('접수일') !== -1) { headerRowIdx = r; break; }
+  }
+
+  const lastRow = sheet.getLastRow();
+  const startRow = headerRowIdx + 2; // 데이터 첫 행(1-based)
+  if (startRow > lastRow) return '데이터가 없습니다.';
+
+  // A열 수식을 한 번에 통째로 읽고/씁니다 (행마다 개별 호출하면 대량 데이터에서 시간초과 위험).
+  const numRows = lastRow - startRow + 1;
+  const colAFormulas = sheet.getRange(startRow, 1, numRows, 1).getFormulasR1C1();
+
+  let lastKnownFormula = '';
+  const newFormulas = [];
+  let filledCount = 0;
+
+  for (let i = 0; i < numRows; i++) {
+    const row = data[startRow - 1 + i];
+    const existingFormula = colAFormulas[i][0];
+
+    if (existingFormula) {
+      lastKnownFormula = existingFormula;
+      newFormulas.push([existingFormula]);
+      continue;
+    }
+
+    const hasOtherContent = row.some((v, idx) => idx > 0 && v !== '' && v !== null);
+    const noVal = row[0];
+    if ((noVal === '' || noVal === null) && hasOtherContent && lastKnownFormula) {
+      newFormulas.push([lastKnownFormula]);
+      filledCount++;
+    } else {
+      newFormulas.push([existingFormula || '']);
+    }
+  }
+
+  if (filledCount > 0) {
+    sheet.getRange(startRow, 1, numRows, 1).setFormulasR1C1(newFormulas);
+  }
+
+  const msg = `완료: A열(No.) 수식을 ${filledCount}개 행에 채워 넣었습니다.`;
+  Logger.log(msg);
+  return msg;
+}
