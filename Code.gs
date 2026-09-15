@@ -396,3 +396,100 @@ function cleanupDuplicates_(targetSheetName, actuallyDelete) {
 
   return `삭제 완료: 중복 그룹 ${dupGroups}개, 총 ${deletedCount}행 삭제됨.`;
 }
+
+// ---------------------------------------------------------------------------
+// [K] AS/매출 탭의 "제품명(사양)" 드롭다운 목록에 새로 확인된 정식 모델명을 추가합니다.
+// (표기 오타로 보이는 값은 제외하고, 실제로 다른 모델로 판단되는 것만 포함했습니다.)
+// Apps Script 편집기에서 addAllowedProductModels() 를 선택해 실행하면 됩니다.
+// ---------------------------------------------------------------------------
+function addAllowedProductModels() {
+  const NEW_VALUES = [
+    'GIX-1 (S2)', 'GIX-1 (S1)', 'MX-600', 'ZEN-5000 Z3', 'ZEN-2060P Z1', 'ZEN-2060P',
+    'E2V(S2)', 'MX-500', 'PAPAYA-CUST', 'ZEN-2060P Z2', 'TOSHIBA(S2)', 'GDP-1C',
+    'PORT-X 4', 'GDP-1', 'HESTIA(L)', 'GX-D1',
+  ];
+
+  const ss = SpreadsheetApp.openById('1EqKrXRWWuDZv9j11iUHDOQmN0cDwAp47dBWvv1SyV7Q');
+  const sheet = ss.getSheetByName('[K] AS/매출');
+  if (!sheet) throw new Error("'[K] AS/매출' 탭을 찾을 수 없습니다.");
+
+  const data = sheet.getDataRange().getValues();
+  let colIdx = -1;
+  for (let r = 0; r < Math.min(5, data.length); r++) {
+    const idx = data[r].indexOf('제품명(사양)');
+    if (idx !== -1) { colIdx = idx + 1; break; }
+  }
+  if (colIdx === -1) throw new Error("'제품명(사양)' 헤더를 찾지 못했습니다.");
+
+  const checkRow = sheet.getLastRow() > 1 ? sheet.getLastRow() : 2;
+  const existingRule = sheet.getRange(checkRow, colIdx).getDataValidation();
+  if (!existingRule || existingRule.getCriteriaType() !== SpreadsheetApp.DataValidationCriteria.VALUE_IN_LIST) {
+    throw new Error("'제품명(사양)' 열에 목록 검증 규칙이 걸려있지 않습니다.");
+  }
+
+  const currentValues = existingRule.getCriteriaValues()[0];
+  const merged = currentValues.slice();
+  let addedCount = 0;
+  NEW_VALUES.forEach(v => {
+    if (merged.indexOf(v) === -1) {
+      merged.push(v);
+      addedCount++;
+    }
+  });
+
+  const newRule = SpreadsheetApp.newDataValidation()
+    .requireValueInList(merged, true)
+    .setAllowInvalid(false)
+    .build();
+
+  // 기존 규칙과 같은 방식으로, 2행부터 시트 최대 행까지 전체 열에 재적용합니다.
+  sheet.getRange(2, colIdx, sheet.getMaxRows() - 1, 1).setDataValidation(newRule);
+
+  const msg = `완료: 드롭다운에 ${addedCount}개 값 신규 추가 (전체 허용값 ${merged.length}개).`;
+  Logger.log(msg);
+  return msg;
+}
+
+// ---------------------------------------------------------------------------
+// A열(No.)이 비어있는데 다른 칸엔 내용이 있는 행을 찾아서 목록으로 보여줍니다.
+// (예전 코드가 No. 수식을 못 채우던 시절 생긴 부분 기록/잔여 테스트 데이터일 수 있어서,
+// 삭제 전에 먼저 내용을 확인하기 위한 진단용입니다. 이 함수는 아무것도 지우지 않습니다.)
+// Apps Script 편집기에서 previewBlankNoRows() 를 선택해 실행하세요.
+// ---------------------------------------------------------------------------
+function previewBlankNoRows(targetSheetName) {
+  targetSheetName = targetSheetName || '[K] AS/매출';
+  const ss = SpreadsheetApp.openById('1EqKrXRWWuDZv9j11iUHDOQmN0cDwAp47dBWvv1SyV7Q');
+  const sheet = ss.getSheetByName(targetSheetName);
+  if (!sheet) throw new Error(`'${targetSheetName}' 탭을 찾을 수 없습니다.`);
+
+  const data = sheet.getDataRange().getValues();
+  if (data.length === 0) return '데이터가 없습니다.';
+
+  // 헤더 행 탐지 (No., 접수일 등 표준 헤더명이 있는 행)
+  const HEADER_SCAN_ROWS = Math.min(5, data.length);
+  let headerRowIdx = 0;
+  for (let r = 0; r < HEADER_SCAN_ROWS; r++) {
+    if (data[r].indexOf('접수일') !== -1) { headerRowIdx = r; break; }
+  }
+
+  const lines = [];
+  for (let i = headerRowIdx + 1; i < data.length; i++) {
+    const row = data[i];
+    const noVal = row[0];
+    const hasOtherContent = row.some((v, idx) => idx > 0 && v !== '' && v !== null);
+    if ((noVal === '' || noVal === null) && hasOtherContent) {
+      const rowNum = i + 1;
+      // 접수일(1), 제조번호/코드(6), 증상/내용(9) 위주로 요약 표시
+      const summary = [row[1], row[6], row[9]].map(v => v instanceof Date
+        ? Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd') : v).join(' | ');
+      lines.push(`${rowNum}행: ${summary}`);
+    }
+  }
+
+  if (lines.length === 0) return 'No.가 비어있는 데이터 행이 없습니다.';
+
+  const msg = `No.가 비어있는 행 ${lines.length}건:\n` + lines.slice(0, 100).join('\n')
+    + (lines.length > 100 ? `\n...외 ${lines.length - 100}건 더 (Apps Script 실행 로그에 전체 출력)` : '');
+  Logger.log(`No.가 비어있는 행 ${lines.length}건:\n` + lines.join('\n'));
+  return msg;
+}
