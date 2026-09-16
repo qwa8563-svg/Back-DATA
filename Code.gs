@@ -58,8 +58,18 @@ function saveMultiData(data, targetSheetName) {
 
 // 탭별 "중복 판단 기준" 컬럼명. 여기 정의된 탭만 중복 체크 + 업데이트(덮어쓰기)를 하고,
 // 정의 안 된 탭은 기존처럼 무조건 새 행으로 추가합니다.
+// - 배열: 그 컬럼들만 비교 (예: [K] AS/매출은 금액만 달라도 같은 건으로 보고 업데이트해야 하므로
+//   접수일/제조번호/증상 3개만 기준으로 씁니다)
+// - '__ALL__': No.(A열)를 제외한 나머지 모든 열 값이 전부 같아야 중복으로 판단합니다
+//   (완전히 똑같은 행이 두 번 들어온 경우만 중복 처리)
 const DEDUPE_KEYS = {
   '[K] AS/매출': ['접수일', '제조번호/코드', '증상/내용'],
+  '[K] 유지보수': '__ALL__',
+  '[K] 채권': '__ALL__',
+  '[M/D] AS': '__ALL__',
+  '[M/D] 매출': '__ALL__',
+  '[M] 채권': '__ALL__',
+  '[D] 채권': '__ALL__',
 };
 
 // 날짜(Date 객체)/문자열을 동일한 형식으로 맞춰서 비교 가능하게 만듭니다.
@@ -146,7 +156,11 @@ function uploadExcelData(newDataArray, targetSheetName) {
   // ---- 중복 체크 준비: 이 탭에 대해 정의된 키 컬럼들의 시트 내 위치를 찾습니다. ----
   const dedupeCols = DEDUPE_KEYS[targetSheetName] || null;
   let dedupeIdx = null;
-  if (dedupeCols && useNameMapping) {
+  if (dedupeCols === '__ALL__') {
+    // 전체 열 기준: No.(A열, 인덱스 0)를 제외한 나머지 모든 열이 키가 됩니다.
+    dedupeIdx = [];
+    for (let s = 1; s < sheetHeaders.length; s++) dedupeIdx.push(s);
+  } else if (dedupeCols && useNameMapping) {
     const idxList = dedupeCols.map(name => sheetHeaders.indexOf(name));
     if (idxList.every(i => i !== -1)) dedupeIdx = idxList;
   }
@@ -297,8 +311,10 @@ function uploadExcelData(newDataArray, targetSheetName) {
 
 // ---------------------------------------------------------------------------
 // 이미 시트에 쌓여있는 중복 항목 정리용 (반복 업로드로 생긴 과거 중복 데이터 청소).
-// DEDUPE_KEYS에 정의된 키(예: 접수일+제조번호/코드+증상/내용)가 같은 행이 여러 개면
-// 가장 마지막(아래쪽, 최신) 행만 남기고 나머지는 삭제합니다.
+// DEDUPE_KEYS에 등록된 모든 탭을 한 번에 확인/정리합니다. 탭마다 판단 기준이 다릅니다:
+// - [K] AS/매출: 접수일+제조번호/코드+증상/내용이 같으면 중복(금액 등 나머지 값은 달라도 됨)
+// - 그 외 탭: No.(A열) 제외 전체 열 값이 완전히 같아야 중복
+// 각 탭에서 같은 키를 가진 행이 여러 개면 가장 마지막(아래쪽, 최신) 행만 남기고 나머지는 삭제합니다.
 //
 // Apps Script 편집기에서 함수 목록 중 아래 두 개를 골라 "실행"하면 됩니다 (인자 입력 불필요):
 //   1) previewDuplicateCleanup()  → 실제로 지우지 않고, 몇 건이 삭제 대상인지만 미리 확인
@@ -308,14 +324,19 @@ function uploadExcelData(newDataArray, targetSheetName) {
 //    사본으로 백업해두는 것을 권장합니다 (파일 > 사본 만들기).
 // ---------------------------------------------------------------------------
 
+// 여기 등록된 모든 탭(DEDUPE_KEYS에 정의된 전부)을 한 번에 확인/정리합니다.
 function previewDuplicateCleanup() {
-  const msg = cleanupDuplicates_('[K] AS/매출', false);
+  const msg = Object.keys(DEDUPE_KEYS)
+    .map(name => `■ ${name}\n` + cleanupDuplicates_(name, false))
+    .join('\n\n');
   Logger.log(msg);
   return msg;
 }
 
 function runDuplicateCleanup() {
-  const msg = cleanupDuplicates_('[K] AS/매출', true);
+  const msg = Object.keys(DEDUPE_KEYS)
+    .map(name => `■ ${name}\n` + cleanupDuplicates_(name, true))
+    .join('\n\n');
   Logger.log(msg);
   return msg;
 }
@@ -333,20 +354,28 @@ function cleanupDuplicates_(targetSheetName, actuallyDelete) {
   const data = sheet.getDataRange().getValues();
   if (data.length === 0) return '데이터가 없습니다.';
 
-  // 헤더 행 자동 탐지: dedupeCols 이름이 전부 등장하는 첫 행을 헤더로 간주합니다.
-  const HEADER_SCAN_ROWS = Math.min(5, data.length);
+  // 헤더 행 자동 탐지.
   let headerRowIdx = -1;
   let idxList = null;
-  for (let r = 0; r < HEADER_SCAN_ROWS; r++) {
-    const candidate = dedupeCols.map(name => data[r].indexOf(name));
-    if (candidate.every(i => i !== -1)) {
-      headerRowIdx = r;
-      idxList = candidate;
-      break;
+  if (dedupeCols === '__ALL__') {
+    // 전체 열 기준 탭은 이름으로 찾을 컬럼이 없으므로 1행을 헤더로 간주합니다.
+    headerRowIdx = 0;
+    idxList = [];
+    for (let s = 1; s < data[0].length; s++) idxList.push(s);
+  } else {
+    // dedupeCols 이름이 전부 등장하는 첫 행을 헤더로 간주합니다.
+    const HEADER_SCAN_ROWS = Math.min(5, data.length);
+    for (let r = 0; r < HEADER_SCAN_ROWS; r++) {
+      const candidate = dedupeCols.map(name => data[r].indexOf(name));
+      if (candidate.every(i => i !== -1)) {
+        headerRowIdx = r;
+        idxList = candidate;
+        break;
+      }
     }
-  }
-  if (!idxList) {
-    throw new Error(`헤더 행에서 중복 판단 기준 컬럼(${dedupeCols.join(', ')})을 찾지 못했습니다.`);
+    if (!idxList) {
+      throw new Error(`헤더 행에서 중복 판단 기준 컬럼(${dedupeCols.join(', ')})을 찾지 못했습니다.`);
+    }
   }
 
   const buildKey = (row) => idxList.map(i => normalizeKeyPart_(row[i])).join('|');
