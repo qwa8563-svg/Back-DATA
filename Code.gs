@@ -62,14 +62,16 @@ function saveMultiData(data, targetSheetName) {
 //   접수일/제조번호/증상 3개만 기준으로 씁니다)
 // - '__ALL__': No.(A열)를 제외한 나머지 모든 열 값이 전부 같아야 중복으로 판단합니다
 //   (완전히 똑같은 행이 두 번 들어온 경우만 중복 처리)
+// - { exclude: [...] }: No.(A열)와 exclude에 적은 컬럼(들)만 빼고 나머지 전부가 같으면 중복으로 판단
+//   (예: 채권 탭은 입금액만 달라도 같은 건으로 보고 업데이트해야 하므로 입금액/잔액을 제외)
 const DEDUPE_KEYS = {
   '[K] AS/매출': ['접수일', '제조번호/코드', '증상/내용'],
   '[K] 유지보수': '__ALL__',
-  '[K] 채권': '__ALL__',
+  '[K] 채권': { exclude: ['입금액', '잔액'] },
   '[M/D] AS': '__ALL__',
-  '[M/D] 매출': '__ALL__',
-  '[M] 채권': '__ALL__',
-  '[D] 채권': '__ALL__',
+  '[M/D] 매출': { exclude: ['수리비용'] },
+  '[M] 채권': { exclude: ['입금액', '잔액'] },
+  '[D] 채권': { exclude: ['입금액', '잔액'] },
 };
 
 // 날짜(Date 객체)/문자열을 동일한 형식으로 맞춰서 비교 가능하게 만듭니다.
@@ -160,7 +162,14 @@ function uploadExcelData(newDataArray, targetSheetName) {
     // 전체 열 기준: No.(A열, 인덱스 0)를 제외한 나머지 모든 열이 키가 됩니다.
     dedupeIdx = [];
     for (let s = 1; s < sheetHeaders.length; s++) dedupeIdx.push(s);
-  } else if (dedupeCols && useNameMapping) {
+  } else if (dedupeCols && dedupeCols.exclude && useNameMapping) {
+    // 제외 컬럼 기준: No.(A열)와 exclude에 적힌 컬럼만 빼고 나머지 전부가 키가 됩니다.
+    const excludeSet = new Set(dedupeCols.exclude);
+    dedupeIdx = [];
+    for (let s = 1; s < sheetHeaders.length; s++) {
+      if (!excludeSet.has(sheetHeaders[s])) dedupeIdx.push(s);
+    }
+  } else if (Array.isArray(dedupeCols) && useNameMapping) {
     const idxList = dedupeCols.map(name => sheetHeaders.indexOf(name));
     if (idxList.every(i => i !== -1)) dedupeIdx = idxList;
   }
@@ -357,14 +366,32 @@ function cleanupDuplicates_(targetSheetName, actuallyDelete) {
   // 헤더 행 자동 탐지.
   let headerRowIdx = -1;
   let idxList = null;
+  const HEADER_SCAN_ROWS = Math.min(5, data.length);
   if (dedupeCols === '__ALL__') {
     // 전체 열 기준 탭은 이름으로 찾을 컬럼이 없으므로 1행을 헤더로 간주합니다.
     headerRowIdx = 0;
     idxList = [];
     for (let s = 1; s < data[0].length; s++) idxList.push(s);
+  } else if (dedupeCols.exclude) {
+    // 제외 컬럼 기준: exclude에 적힌 컬럼명이 전부 등장하는 첫 행을 헤더로 간주하고,
+    // 그 컬럼들만 빼고 나머지 전부를 키로 사용합니다.
+    const excludeSet = new Set(dedupeCols.exclude);
+    for (let r = 0; r < HEADER_SCAN_ROWS; r++) {
+      const hasAllExcluded = dedupeCols.exclude.every(name => data[r].indexOf(name) !== -1);
+      if (hasAllExcluded) {
+        headerRowIdx = r;
+        idxList = [];
+        for (let s = 1; s < data[r].length; s++) {
+          if (!excludeSet.has(data[r][s])) idxList.push(s);
+        }
+        break;
+      }
+    }
+    if (!idxList) {
+      throw new Error(`헤더 행에서 제외 대상 컬럼(${dedupeCols.exclude.join(', ')})을 찾지 못했습니다.`);
+    }
   } else {
     // dedupeCols 이름이 전부 등장하는 첫 행을 헤더로 간주합니다.
-    const HEADER_SCAN_ROWS = Math.min(5, data.length);
     for (let r = 0; r < HEADER_SCAN_ROWS; r++) {
       const candidate = dedupeCols.map(name => data[r].indexOf(name));
       if (candidate.every(i => i !== -1)) {
