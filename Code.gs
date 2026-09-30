@@ -93,14 +93,16 @@ function buildManualRow_(targetSheetName, data) {
     case '[K] AS/매출':
       return ["", data.d1, data.d2, data.d3, data.d4, data.d5, data.d6, data.d7, data.d8, data.d9, data.d10, data.d11, data.d12, data.d13, data.d14];
     case '[K] 유지보수':
-      return ["", data.d1, data.d2, data.d3, data.d4, data.d5, data.d6, data.d7, data.d8, data.d9, data.d10, data.d11, data.d12, data.d13];
+      // 시트에는 '유지보수 금액(월납)'(J열)과 '월'(L열) 사이에 빈 열(K열)이 있어서 한 칸을 비워 둡니다.
+      return ["", data.d1, data.d2, data.d3, data.d4, data.d5, data.d6, data.d7, data.d8, data.d9, "", data.d10, data.d11, data.d12, data.d13];
     case '[K] 채권':
-      // 잔액 = 청구금액(d3) - 입금액(d4)
-      return ["", data.d1, data.d2, data.d3, data.d4, (Number(data.d3) || 0) - (Number(data.d4) || 0), data.d6, data.d7, data.d8, data.d9];
+      // 열 순서: 장비구분, 거래처, 청구금액, 입금액, 잔액(자동계산), 발생일, 회수일자, 연체여부, 비고
+      return ["", data.d1, data.d2, data.d3, data.d4, (Number(data.d3) || 0) - (Number(data.d4) || 0), data.d5, data.d6, data.d7, data.d8];
     case '[M/D] AS':
       return ["", data.d1, data.d2, data.d3, data.d4, data.d5, data.d6, data.d7, data.d8, data.d9, data.d10, data.d11, data.d12, data.d13, data.d14, data.d15];
     case '[M/D] 매출':
-      return ["", data.d1, data.d2, data.d3, data.d4, data.d5, data.d6, data.d7, data.d8, data.d9, data.d10, data.d11];
+      // 시트에서 '증상/내용'은 K:L 두 칸이 병합되어 있고 '통화'는 M열이라서, L열은 비워 둡니다.
+      return ["", data.d1, data.d2, data.d3, data.d4, data.d5, data.d6, data.d7, data.d8, data.d9, data.d10, "", data.d11];
     case '[M] 채권':
     case '[D] 채권':
       // 잔액 = 청구금액(d5) - 입금액(d6). (d4는 통화 기호라서 계산에 쓰면 안 됩니다)
@@ -211,7 +213,7 @@ function saveMultiData(data, targetSheetName, mode) {
 //   (예: 채권 탭은 입금액만 달라도 같은 건으로 보고 업데이트해야 하므로 입금액/잔액을 제외)
 const DEDUPE_KEYS = {
   '[K] AS/매출': ['접수일', '제조번호/코드', '증상/내용'],
-  '[K] 유지보수': ['병원명', 'S/N', '유지보수 계약일', '월'],
+  '[K] 유지보수': ['병원명', 'S/N', '유지보수 계약일'],
   '[K] 채권': { exclude: ['입금액', '잔액'] },
   '[M/D] AS': ['팀', '접수일', '제조번호/코드', '증상/내용'],
   '[M/D] 매출': { exclude: ['수리비용'] },
@@ -245,7 +247,7 @@ const DUPLICATE_POLICY = {
 // 날짜(Date 객체)/문자열을 동일한 형식으로 맞춰서 비교 가능하게 만듭니다.
 function normalizeKeyPart_(v) {
   if (v instanceof Date) {
-    return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+    return Utilities.formatDate(v, spreadsheetTz_(), 'yyyy-MM-dd');
   }
   return (v === null || v === undefined) ? '' : String(v).trim();
 }
@@ -329,6 +331,19 @@ function openSpreadsheet_() {
   return SpreadsheetApp.openById(SPREADSHEET_ID);
 }
 
+// 시트의 날짜 셀은 "스프레드시트 시간대" 기준 자정입니다. 스크립트 시간대와 다르면 하루씩 밀려 비교가 틀어지므로 시트 기준을 씁니다.
+let spreadsheetTzCache_ = null;
+function spreadsheetTz_() {
+  if (!spreadsheetTzCache_) {
+    try {
+      spreadsheetTzCache_ = openSpreadsheet_().getSpreadsheetTimeZone();
+    } catch (e) {
+      spreadsheetTzCache_ = Session.getScriptTimeZone();
+    }
+  }
+  return spreadsheetTzCache_;
+}
+
 function getOrCreateLogSheet_(ss, def) {
   let sh = ss.getSheetByName(def.name);
   if (!sh) {
@@ -389,7 +404,7 @@ function rowsEqual_(a, b, idxs) {
 // 시트에서 읽은 행을 JSON으로 남기기 좋게 (Date → 문자열) 변환합니다.
 function plainRow_(row) {
   return row.map(v => v instanceof Date
-    ? Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd') : v);
+    ? Utilities.formatDate(v, spreadsheetTz_(), 'yyyy-MM-dd') : v);
 }
 
 function shortText_(v, max) {
@@ -1122,7 +1137,7 @@ function previewBlankNoRows(targetSheetName) {
       const rowNum = i + 1;
       // 접수일(1), 제조번호/코드(6), 증상/내용(9) 위주로 요약 표시
       const summary = [row[1], row[6], row[9]].map(v => v instanceof Date
-        ? Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd') : v).join(' | ');
+        ? Utilities.formatDate(v, spreadsheetTz_(), 'yyyy-MM-dd') : v).join(' | ');
       lines.push(`${rowNum}행: ${summary}`);
     }
   }
