@@ -397,6 +397,15 @@ function withLock_(fn) {
 // 비교용 정규화: 날짜는 yyyy-MM-dd, "1,200,000"과 1200000은 같은 값으로 봅니다(앞자리 0이 있는 코드류는 제외).
 function cmpNorm_(v) {
   const s = normalizeKeyPart_(v);
+  // "2025. 12. 30", "2025/12/30", "2025-12-30 00:00:00" 같은 날짜 표기는 모두 yyyy-MM-dd로 통일합니다.
+  // (엑셀은 셀 서식 그대로 문자열로 읽히기 때문에, 시트의 날짜와 표기만 달라도 다른 값으로 보이는 문제를 막습니다.)
+  const dm = s.match(/^(\d{4})\s*[.\-\/]\s*(\d{1,2})\s*[.\-\/]\s*(\d{1,2})\.?(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?$/);
+  if (dm) {
+    const mm = Number(dm[2]), dd = Number(dm[3]);
+    if (mm >= 1 && mm <= 12 && dd >= 1 && dd <= 31) {
+      return `${dm[1]}-${('0' + mm).slice(-2)}-${('0' + dd).slice(-2)}`;
+    }
+  }
   if (/^-?\d+(\.\d+)?$/.test(s) || /^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(s)) {
     if (!/^-?0\d/.test(s)) {
       const n = Number(s.replace(/,/g, ''));
@@ -541,7 +550,21 @@ function analyzeUpload_(newDataArray, targetSheetName) {
 
   // ---- 중복 체크 준비: 이 탭에 대해 정의된 키 컬럼들의 시트 내 위치를 찾습니다. ----
   const policy = DUPLICATE_POLICY[targetSheetName] || 'overwrite';
-  const dedupeIdx = resolveDedupeIdx_(targetSheetName, sheetHeaders, useNameMapping);
+  let dedupeIdx = resolveDedupeIdx_(targetSheetName, sheetHeaders, useNameMapping);
+  // 중복 판단 기준 열이 엑셀에 없으면(열 이름 불일치 등) 값이 항상 비어 있어 "이미 등록된 행"을 하나도 못 찾고
+  // 전부 신규로 쌓이게 됩니다. 조용히 넘어가지 않고 막습니다.
+  if (dedupeIdx && useNameMapping && DEDUPE_KEYS[targetSheetName] !== '__ALL__') {
+    const missingIdx = dedupeIdx.filter(i => providedIdx.indexOf(i) === -1);
+    if (missingIdx.length) {
+      if (Array.isArray(DEDUPE_KEYS[targetSheetName])) {
+        throw new Error(`엑셀에 중복 판단 기준 열 [${missingIdx.map(i => sheetHeaders[i]).join(', ')}]이(가) 없어서, 이미 등록된 행인지 판별할 수 없습니다. `
+          + `(그대로 올리면 전부 신규로 쌓입니다.) 엑셀 1행의 열 이름이 시트와 같은지 확인하거나 해당 열을 추가하세요.`);
+      }
+      // 제외(exclude) 방식 탭은 엑셀에 있는 열만으로 비교합니다.
+      dedupeIdx = dedupeIdx.filter(i => providedIdx.indexOf(i) !== -1);
+      if (dedupeIdx.length === 0) dedupeIdx = null;
+    }
+  }
   const buildKey_ = (rowArray) => dedupeIdx.map(i => cmpNorm_(rowArray[i])).join('|');
 
   // 기존 시트 데이터로 "키 → 시트 행 번호(1-based) 목록" 맵을 만듭니다. (같은 키가 여러 행일 수 있음)
@@ -720,7 +743,7 @@ function analyzeUpload_(newDataArray, targetSheetName) {
   }
 
   return {
-    ss, sheet, targetSheetName, sheetHeaders, existingData, providedIdx, policy,
+    ss, sheet, targetSheetName, sheetHeaders, existingData, providedIdx, policy, dedupeIdx, headerRowIdx,
     rowsToAppend, rowsToUpdate, rowsToFill, conflicts,
     invalidRows, invalidCount, blankCount, identicalCount, alreadyPendingCount, totalRows: newDataArray.length,
     MAX_REPORTED,
@@ -747,6 +770,17 @@ function previewExcelUpload(newDataArray, targetSheetName) {
     alreadyPendingCount: plan.alreadyPendingCount,
     invalidCount: plan.invalidCount,
     blankCount: plan.blankCount,
+    keyInfo: (function() {
+      // "왜 신규로 보는지" 확인용: 중복 판단에 쓰는 열 이름, 신규로 본 행의 키 값, 시트 마지막 행들의 키 값
+      if (!plan.dedupeIdx) return null;
+      const keyOf = r => plan.dedupeIdx.map(i => cmpNorm_(r[i]) || '(빈값)').join(' | ');
+      const dataRows = plan.existingData.slice(plan.headerRowIdx + 1).filter(r => r.some((v, i) => i > 0 && v !== ''));
+      return {
+        cols: plan.dedupeIdx.map(i => plan.sheetHeaders[i]),
+        newKeys: plan.rowsToAppend.slice(0, 3).map(keyOf),
+        sheetKeys: dataRows.slice(-3).map(keyOf),
+      };
+    })(),
     appendSamples: plan.rowsToAppend.slice(0, SAMPLE).map(describeRow_),
     updateSamples: plan.rowsToUpdate.slice(0, SAMPLE).map(u =>
       `${u.row}행: ${diffSummary_(h, plan.existingData[u.row - 1], u.data, plan.providedIdx)}`),

@@ -354,6 +354,14 @@
           + '<ul class="sample-list">' + sec[1].map(t => '<li>' + esc(t) + '</li>').join('') + '</ul>';
       });
 
+      if (p.keyInfo && p.appendCount > 0) {
+        html += '<div class="sample-title">이미 등록한 파일인데 신규로 나온다면 — 중복 판단 기준 비교</div>'
+          + '<ul class="sample-list"><li>판단에 쓰는 열: ' + esc(p.keyInfo.cols.join(' | ')) + '</li>'
+          + p.keyInfo.newKeys.map(t => '<li>신규로 본 행: ' + esc(t) + '</li>').join('')
+          + p.keyInfo.sheetKeys.map(t => '<li>시트 마지막 행: ' + esc(t) + '</li>').join('')
+          + '</ul>';
+      }
+
       document.getElementById('previewTitle').textContent = '업로드 미리보기 — ' + p.sheetName;
       document.getElementById('previewBody').innerHTML = html;
       const nothing = (p.appendCount + p.updateCount + (p.fillCount || 0) + p.conflictCount) === 0;
