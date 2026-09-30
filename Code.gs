@@ -335,11 +335,12 @@ function openSpreadsheet_() {
 let spreadsheetTzCache_ = null;
 function spreadsheetTz_() {
   if (!spreadsheetTzCache_) {
+    let tz = null;
     try {
-      spreadsheetTzCache_ = openSpreadsheet_().getSpreadsheetTimeZone();
-    } catch (e) {
-      spreadsheetTzCache_ = Session.getScriptTimeZone();
-    }
+      tz = openSpreadsheet_().getSpreadsheetTimeZone();
+    } catch (e) {}
+    // 시트 시간대가 비어 있는 경우(값이 null/빈 문자열)에도 항상 문자열을 돌려주도록 단계별로 대체합니다.
+    spreadsheetTzCache_ = (typeof tz === 'string' && tz) ? tz : (Session.getScriptTimeZone() || 'Asia/Seoul');
   }
   return spreadsheetTzCache_;
 }
