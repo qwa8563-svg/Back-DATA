@@ -7,56 +7,198 @@ function doGet(e) {
       .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
 
-// 1. 7개 탭 수동 입력 저장 함수
-function saveMultiData(data, targetSheetName) {
-  const ss = openSpreadsheet_();
-  const sheet = ss.getSheetByName(targetSheetName);
+// ---------------------------------------------------------------------------
+// 1. 7개 탭 수동 입력 저장
+//    - 서버에서 입력값을 검증하고(필수/날짜/숫자/날짜 순서/드롭다운 허용값),
+//    - 같은 건이 이미 있으면 저장하지 않고 "중복" 결과를 돌려줍니다. (화면에서 덮어쓰기/새 행 추가/취소 선택)
+// 규칙의 키(d1, d2 ...)는 화면 입력칸 id(t1_d1 → d1)의 번호입니다.
+// ---------------------------------------------------------------------------
+const MD_BOND_RULES_ = {
+  labels: { d2: '법인/거래처', d5: '청구금액', d6: '입금액', d7: '발송일', d8: '입금예정일' },
+  required: ['d2', 'd7'], dates: ['d7', 'd8'], numbers: ['d5', 'd6'], order: [['d7', 'd8']],
+};
+const MANUAL_RULES = {
+  '[K] AS/매출': {
+    labels: { d1: '접수일', d2: '조치일', d6: '제조번호/코드', d9: '증상/내용', d13: '수리비용' },
+    required: ['d1', 'd6', 'd9'], dates: ['d1', 'd2'], numbers: ['d13'], order: [['d1', 'd2']],
+  },
+  '[K] 유지보수': {
+    labels: { d1: '병원명', d3: 'S/N', d4: '장비 납품일', d5: '유지보수 계약일', d6: '계약 만료일',
+              d9: '유지보수 금액(월납)', d11: '유효 계약 수', d12: '유지보수 합계(원)' },
+    required: ['d1', 'd3'], dates: ['d4', 'd5', 'd6'], numbers: ['d9', 'd11', 'd12'], order: [['d5', 'd6']],
+  },
+  '[K] 채권': {
+    labels: { d2: '거래처', d3: '청구금액', d4: '입금액', d5: '발생일', d6: '회수일자' },
+    required: ['d2', 'd5'], dates: ['d5', 'd6'], numbers: ['d3', 'd4'], order: [['d5', 'd6']],
+  },
+  '[M/D] AS': {
+    labels: { d1: '팀', d3: '접수일', d4: '조치일', d9: '제조번호/코드', d12: '증상/내용' },
+    required: ['d1', 'd3', 'd9', 'd12'], dates: ['d3', 'd4'], numbers: [], order: [['d3', 'd4']],
+  },
+  '[M/D] 매출': {
+    labels: { d2: '발송일', d7: '제조번호/코드' },
+    required: ['d2', 'd7'], dates: ['d2'], numbers: [], order: [],
+  },
+  '[M] 채권': MD_BOND_RULES_,
+  '[D] 채권': MD_BOND_RULES_,
+};
 
-  if (!sheet) throw new Error(`'${targetSheetName}' 탭을 찾을 수 없습니다.`);
+function isValidIsoDate_(str) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(str)) return false;
+  const p = str.split('-').map(Number);
+  const d = new Date(Date.UTC(p[0], p[1] - 1, p[2]));
+  return d.getUTCFullYear() === p[0] && d.getUTCMonth() === p[1] - 1 && d.getUTCDate() === p[2];
+}
 
-  // A열(No.) 수식 유지를 위해 B열부터 데이터 저장
-  let rowData = [];
+// 입력값을 다듬고(공백 제거, 숫자 변환) 문제가 있으면 한꺼번에 모아 예외로 알립니다.
+function validateManualInput_(data, rules) {
+  const clean = {};
+  Object.keys(data || {}).forEach(k => {
+    const v = data[k];
+    clean[k] = (typeof v === 'string') ? v.trim() : (v === null || v === undefined ? '' : v);
+  });
+  rules.required.concat(rules.dates, rules.numbers).forEach(k => { if (clean[k] === undefined) clean[k] = ''; });
+  const label = k => rules.labels[k] || k;
+  const errors = [];
 
+  rules.required.forEach(k => {
+    if (clean[k] === '') errors.push(`${label(k)}은(는) 필수 입력입니다.`);
+  });
+  rules.dates.forEach(k => {
+    if (clean[k] !== '' && !isValidIsoDate_(String(clean[k]))) {
+      errors.push(`${label(k)}: 올바른 날짜(yyyy-mm-dd)가 아닙니다. (입력값: ${clean[k]})`);
+    }
+  });
+  rules.numbers.forEach(k => {
+    if (clean[k] === '') return;
+    const n = Number(clean[k]);
+    if (!isFinite(n)) errors.push(`${label(k)}: 숫자가 아닙니다. (입력값: ${clean[k]})`);
+    else if (n < 0) errors.push(`${label(k)}: 0 이상이어야 합니다.`);
+    else clean[k] = n;
+  });
+  rules.order.forEach(pair => {
+    const a = clean[pair[0]], b = clean[pair[1]];
+    if (a !== '' && b !== '' && isValidIsoDate_(String(a)) && isValidIsoDate_(String(b)) && String(b) < String(a)) {
+      errors.push(`${label(pair[1])}은(는) ${label(pair[0])}보다 빠를 수 없습니다.`);
+    }
+  });
+
+  if (errors.length) throw new Error('입력값을 확인해주세요:\n- ' + errors.join('\n- '));
+  return clean;
+}
+
+// 탭별 저장용 행(A열 No.는 수식 유지를 위해 비워둠)
+function buildManualRow_(targetSheetName, data) {
   switch (targetSheetName) {
     case '[K] AS/매출':
-      rowData = ["", data.d1, data.d2, data.d3, data.d4, data.d5, data.d6, data.d7, data.d8, data.d9, data.d10, data.d11, data.d12, data.d13, data.d14];
-      break;
+      return ["", data.d1, data.d2, data.d3, data.d4, data.d5, data.d6, data.d7, data.d8, data.d9, data.d10, data.d11, data.d12, data.d13, data.d14];
     case '[K] 유지보수':
-      rowData = ["", data.d1, data.d2, data.d3, data.d4, data.d5, data.d6, data.d7, data.d8, data.d9, data.d10, data.d11, data.d12, data.d13];
-      break;
+      return ["", data.d1, data.d2, data.d3, data.d4, data.d5, data.d6, data.d7, data.d8, data.d9, data.d10, data.d11, data.d12, data.d13];
     case '[K] 채권':
-      const balanceK = (Number(data.d3) || 0) - (Number(data.d4) || 0);
-      rowData = ["", data.d1, data.d2, data.d3, data.d4, balanceK, data.d6, data.d7, data.d8, data.d9];
-      break;
+      // 잔액 = 청구금액(d3) - 입금액(d4)
+      return ["", data.d1, data.d2, data.d3, data.d4, (Number(data.d3) || 0) - (Number(data.d4) || 0), data.d6, data.d7, data.d8, data.d9];
     case '[M/D] AS':
-      rowData = ["", data.d1, data.d2, data.d3, data.d4, data.d5, data.d6, data.d7, data.d8, data.d9, data.d10, data.d11, data.d12, data.d13, data.d14, data.d15];
-      break;
+      return ["", data.d1, data.d2, data.d3, data.d4, data.d5, data.d6, data.d7, data.d8, data.d9, data.d10, data.d11, data.d12, data.d13, data.d14, data.d15];
     case '[M/D] 매출':
-      rowData = ["", data.d1, data.d2, data.d3, data.d4, data.d5, data.d6, data.d7, data.d8, data.d9, data.d10, data.d11];
-      break;
+      return ["", data.d1, data.d2, data.d3, data.d4, data.d5, data.d6, data.d7, data.d8, data.d9, data.d10, data.d11];
     case '[M] 채권':
     case '[D] 채권':
-      const balanceMD = (Number(data.d4) || 0) - (Number(data.d5) || 0);
-      rowData = ["", data.d1, data.d2, data.d3, data.d4, data.d5, data.d6, balanceMD, data.d7, data.d8, data.d9, data.d10];
-      break;
+      // 잔액 = 청구금액(d5) - 입금액(d6). (d4는 통화 기호라서 계산에 쓰면 안 됩니다)
+      return ["", data.d1, data.d2, data.d3, data.d4, data.d5, data.d6, (Number(data.d5) || 0) - (Number(data.d6) || 0), data.d7, data.d8, data.d9, data.d10];
     default:
       throw new Error("알 수 없는 양식입니다.");
   }
+}
 
-  const prevLastRow = sheet.getLastRow();
-  sheet.appendRow(rowData);
-  const newRow = sheet.getLastRow();
-
-  // A열(No.) 수식은 행마다 개별적으로 걸려있어 새 행엔 복사되어 있지 않으므로,
-  // 바로 위 행의 수식을 그대로 복사해 붙여넣습니다(상대참조라 행 번호는 자동으로 맞춰집니다).
-  if (prevLastRow >= 1) {
-    const aboveFormula = sheet.getRange(prevLastRow, 1).getFormulaR1C1();
-    if (aboveFormula) {
-      sheet.getRange(newRow, 1).setFormulaR1C1(aboveFormula);
-    }
+// 키 컬럼명이 전부 등장하는 첫 행(상위 5행 이내)을 헤더 행으로 봅니다. 없으면 -1.
+function detectHeaderRow_(data, targetSheetName) {
+  const def = DEDUPE_KEYS[targetSheetName];
+  const names = Array.isArray(def) ? def : (def && def.exclude ? def.exclude : []);
+  for (let r = 0; r < Math.min(5, data.length); r++) {
+    if (names.every(n => headerIndex_(data[r], n) !== -1)) return r;
   }
+  return -1;
+}
 
-  return `${targetSheetName} 시트에 성공적으로 저장되었습니다!`;
+// mode: 생략 = 검사 후 저장 / 'overwrite' = 같은 건이 있으면 그 행을 덮어씀 / 'append' = 중복 검사 없이 새 행으로 추가
+// 반환: {status: 'saved' | 'duplicate' | 'identical', message, ...}
+function saveMultiData(data, targetSheetName, mode) {
+  const rules = MANUAL_RULES[targetSheetName];
+  if (!rules) throw new Error("알 수 없는 양식입니다.");
+  const clean = validateManualInput_(data, rules);
+
+  return withLock_(function() {
+    const ss = openSpreadsheet_();
+    const sheet = ss.getSheetByName(targetSheetName);
+    if (!sheet) throw new Error(`'${targetSheetName}' 탭을 찾을 수 없습니다.`);
+
+    const rowData = buildManualRow_(targetSheetName, clean).map(v => v === undefined ? '' : v);
+    const existingData = sheet.getDataRange().getValues();
+    const headerRowIdx = detectHeaderRow_(existingData, targetSheetName);
+    if (headerRowIdx === -1) {
+      throw new Error(`'${targetSheetName}' 탭에서 중복 검사용 헤더를 찾지 못했습니다. 시트 헤더 이름과 Code.gs의 DEDUPE_KEYS를 확인하세요.`);
+    }
+    const headers = existingData[headerRowIdx];
+    const colLabel = i => (headers[i] || `${i + 1}번째 열`);
+
+    // 드롭다운(목록) 열은 허용값 확인 — 저장 시 알 수 없는 시트 오류가 나는 대신 어느 항목이 문제인지 알려줍니다.
+    {
+      const lastRow = sheet.getLastRow();
+      const errors = [];
+      for (let i = 1; i < rowData.length; i++) {
+        const v = rowData[i];
+        if (v === '' || lastRow <= headerRowIdx + 1) continue;
+        const allowed = getAllowedValuesForColumn_(sheet, i + 1, lastRow);
+        if (allowed && allowed.indexOf(v) === -1) errors.push(`${colLabel(i)}: '${v}'은(는) 선택 가능한 목록에 없습니다.`);
+      }
+      if (errors.length) throw new Error('입력값을 확인해주세요:\n- ' + errors.join('\n- '));
+    }
+
+    // 값이 입력된 열(A열 제외)만 비교/덮어쓰기 대상으로 봅니다. (비워 둔 칸이 기존 값을 지우지 않도록)
+    const filledIdx = [];
+    for (let i = 1; i < rowData.length; i++) if (rowData[i] !== '') filledIdx.push(i);
+
+    if (mode !== 'append') {
+      const keyIdx = resolveDedupeIdx_(targetSheetName, headers, true);
+      if (keyIdx) {
+        const buildKey = r => keyIdx.map(i => cmpNorm_(r[i])).join('|');
+        const key = buildKey(rowData);
+        const matches = [];
+        if (key.replace(/\|/g, '')) {
+          for (let i = headerRowIdx + 1; i < existingData.length; i++) {
+            if (buildKey(existingData[i]) === key) matches.push(i + 1);
+          }
+        }
+        if (matches.length > 0) {
+          const diffOf = r => filledIdx.filter(i => cmpNorm_(existingData[r - 1][i]) !== cmpNorm_(rowData[i]));
+          const sameRow = matches.find(r => diffOf(r).length === 0);
+          if (sameRow) {
+            return { status: 'identical', message: `${sameRow}행에 이미 같은 내용이 등록되어 있어 저장하지 않았습니다.` };
+          }
+          const target = matches[matches.length - 1];
+          const diff = diffSummary_(headers, existingData[target - 1], rowData, diffOf(target));
+          if (mode !== 'overwrite') {
+            return {
+              status: 'duplicate', row: target, matchCount: matches.length, diff: diff,
+              message: `같은 건이 이미 ${target}행에 있습니다.`,
+            };
+          }
+          // 덮어쓰기: 변경 전 행을 _변경이력에 남긴 뒤, 입력한 열만 갱신합니다.
+          appendLogRows_(getOrCreateLogSheet_(ss, LOG_SHEETS.history), [[
+            new Date(), currentUser_(), targetSheetName, target, '수동 입력 덮어쓰기', diff,
+            JSON.stringify(plainRow_(existingData[target - 1])),
+          ]]);
+          writeProvidedCols_(sheet, target, rowData, filledIdx);
+          SpreadsheetApp.flush();
+          return { status: 'saved', message: `${targetSheetName} ${target}행을 덮어썼습니다. (변경 전 내용은 '${LOG_SHEETS.history.name}' 탭에 기록)` };
+        }
+      }
+    }
+
+    appendRows_(sheet, [rowData], rowData.length);
+    SpreadsheetApp.flush();
+    return { status: 'saved', message: `${targetSheetName} 시트에 성공적으로 저장되었습니다!` };
+  });
 }
 
 // 탭별 "중복 판단 기준" 컬럼명. 여기 정의된 탭만 중복 체크 + 업데이트(덮어쓰기)를 하고,
@@ -69,13 +211,21 @@ function saveMultiData(data, targetSheetName) {
 //   (예: 채권 탭은 입금액만 달라도 같은 건으로 보고 업데이트해야 하므로 입금액/잔액을 제외)
 const DEDUPE_KEYS = {
   '[K] AS/매출': ['접수일', '제조번호/코드', '증상/내용'],
-  '[K] 유지보수': '__ALL__',
+  '[K] 유지보수': ['병원명', 'S/N', '유지보수 계약일', '월'],
   '[K] 채권': { exclude: ['입금액', '잔액'] },
-  '[M/D] AS': '__ALL__',
+  '[M/D] AS': ['팀', '접수일', '제조번호/코드', '증상/내용'],
   '[M/D] 매출': { exclude: ['수리비용'] },
   '[M] 채권': { exclude: ['입금액', '잔액'] },
   '[D] 채권': { exclude: ['입금액', '잔액'] },
 };
+
+// 이미 시트에 쌓인 중복을 "삭제"하는 정리 기능(previewDuplicateCleanup/runDuplicateCleanup)용 기준.
+// 업로드 매칭(DEDUPE_KEYS)은 틀려도 '_검토대기'로 갈 뿐이지만, 삭제는 데이터가 사라지므로
+// [K] 유지보수/[M/D] AS는 "전체 열이 완전히 같은 행"만 중복으로 봅니다. (같은 날 같은 기기의 별개 접수건 보호)
+const CLEANUP_KEYS = Object.assign({}, DEDUPE_KEYS, {
+  '[K] 유지보수': '__ALL__',
+  '[M/D] AS': '__ALL__',
+});
 
 // 키(위 DEDUPE_KEYS)가 같은데 값이 다른 행이 업로드됐을 때의 처리 방식.
 // - 'review'   : 덮어쓰지 않고 '_검토대기' 탭에 기존값/새값을 나란히 보관 → 담당자가 반영/신규추가/무시 선택
@@ -98,6 +248,42 @@ function normalizeKeyPart_(v) {
     return Utilities.formatDate(v, Session.getScriptTimeZone(), 'yyyy-MM-dd');
   }
   return (v === null || v === undefined) ? '' : String(v).trim();
+}
+
+function normHeader_(s) {
+  return (s === null || s === undefined) ? '' : String(s).trim().replace(/\s+/g, '');
+}
+
+function headerIndex_(headers, name) {
+  const n = normHeader_(name);
+  for (let i = 0; i < headers.length; i++) if (normHeader_(headers[i]) === n) return i;
+  return -1;
+}
+
+// 탭의 DEDUPE_KEYS 정의를 시트 헤더 기준 "키 열 인덱스 배열"로 바꿉니다. 키가 없는 탭이면 null.
+// 키로 지정한 컬럼명이 시트 헤더에 없으면(오타/헤더 변경) 조용히 중복 검사를 끄지 않고 오류로 알립니다.
+function resolveDedupeIdx_(targetSheetName, sheetHeaders, useNameMapping) {
+  const def = DEDUPE_KEYS[targetSheetName] || null;
+  if (!def) return null;
+  const idx = [];
+  if (def === '__ALL__') {
+    for (let s = 1; s < sheetHeaders.length; s++) idx.push(s);
+    return idx;
+  }
+  if (!useNameMapping) return null;
+  if (def.exclude) {
+    const excludeSet = new Set(def.exclude.map(normHeader_));
+    for (let s = 1; s < sheetHeaders.length; s++) {
+      if (!excludeSet.has(normHeader_(sheetHeaders[s]))) idx.push(s);
+    }
+    return idx;
+  }
+  const list = def.map(name => headerIndex_(sheetHeaders, name));
+  const missing = def.filter((name, k) => list[k] === -1);
+  if (missing.length) {
+    throw new Error(`'${targetSheetName}' 탭 헤더에서 중복 판단 컬럼 [${missing.join(', ')}]을(를) 찾지 못했습니다. 시트 헤더 이름을 확인하거나 Code.gs의 DEDUPE_KEYS를 수정하세요.`);
+  }
+  return list;
 }
 
 // 특정 열에 "목록에서 선택" 데이터 확인 규칙이 걸려있으면 허용값 배열을, 없으면 null을 반환합니다.
@@ -330,25 +516,9 @@ function analyzeUpload_(newDataArray, targetSheetName) {
   }
 
   // ---- 중복 체크 준비: 이 탭에 대해 정의된 키 컬럼들의 시트 내 위치를 찾습니다. ----
-  const dedupeCols = DEDUPE_KEYS[targetSheetName] || null;
   const policy = DUPLICATE_POLICY[targetSheetName] || 'overwrite';
-  let dedupeIdx = null;
-  if (dedupeCols === '__ALL__') {
-    // 전체 열 기준: No.(A열, 인덱스 0)를 제외한 나머지 모든 열이 키가 됩니다.
-    dedupeIdx = [];
-    for (let s = 1; s < sheetHeaders.length; s++) dedupeIdx.push(s);
-  } else if (dedupeCols && dedupeCols.exclude && useNameMapping) {
-    // 제외 컬럼 기준: No.(A열)와 exclude에 적힌 컬럼만 빼고 나머지 전부가 키가 됩니다.
-    const excludeSet = new Set(dedupeCols.exclude);
-    dedupeIdx = [];
-    for (let s = 1; s < sheetHeaders.length; s++) {
-      if (!excludeSet.has(sheetHeaders[s])) dedupeIdx.push(s);
-    }
-  } else if (Array.isArray(dedupeCols) && useNameMapping) {
-    const idxList = dedupeCols.map(name => sheetHeaders.indexOf(name));
-    if (idxList.every(i => i !== -1)) dedupeIdx = idxList;
-  }
-  const buildKey_ = (rowArray) => dedupeIdx.map(i => normalizeKeyPart_(rowArray[i])).join('|');
+  const dedupeIdx = resolveDedupeIdx_(targetSheetName, sheetHeaders, useNameMapping);
+  const buildKey_ = (rowArray) => dedupeIdx.map(i => cmpNorm_(rowArray[i])).join('|');
 
   // 기존 시트 데이터로 "키 → 시트 행 번호(1-based) 목록" 맵을 만듭니다. (같은 키가 여러 행일 수 있음)
   const existingKeyMap = {};
@@ -362,7 +532,9 @@ function analyzeUpload_(newDataArray, targetSheetName) {
   const rowsToAppend = [];
   const keyToAppendIdx = {};   // overwrite 정책: 파일 내 같은 키는 마지막 값으로 교체
   const newByKey = {};         // review 정책: 파일 내 같은 키라도 값이 다르면 둘 다 추가
-  const rowsToUpdate = [];     // {row, data}
+  const rowsToUpdate = [];     // {row, data}  (overwrite 정책: 엑셀 열 전체 덮어쓰기)
+  const rowsToFill = [];       // {row, data, cols} (review 정책: 기존 행의 빈 칸만 채움 — 기존 값은 그대로)
+  const fillByKey = {};
   const keyToUpdateIdx = {};
   const conflicts = [];        // {row, data, excelRow}
   const conflictsByKey = {};
@@ -445,13 +617,13 @@ function analyzeUpload_(newDataArray, targetSheetName) {
       if (key.replace(/\|/g, '')) {
         const existingRows = existingKeyMap[key];
         if (existingRows) {
-          // 같은 키의 기존 행 중 값까지 전부 같은 게 있으면 할 일이 없습니다.
-          if (existingRows.some(r => rowsEqual_(existingData[r - 1], alignedRow, providedIdx))) {
-            identicalCount++;
-            continue;
-          }
           const target = existingRows[existingRows.length - 1];
           if (policy === 'overwrite') {
+            // 같은 키의 기존 행 중 값까지 전부 같은 게 있으면 할 일이 없습니다.
+            if (existingRows.some(r => rowsEqual_(existingData[r - 1], alignedRow, providedIdx))) {
+              identicalCount++;
+              continue;
+            }
             // 덮어쓰기 탭(채권 등): 값이 바뀌는 게 정상 흐름이므로 마지막 기존 행을 최신 값으로 갱신 (이력은 _변경이력에 남김)
             if (keyToUpdateIdx[key] !== undefined) {
               rowsToUpdate[keyToUpdateIdx[key]].data = alignedRow;
@@ -460,13 +632,39 @@ function analyzeUpload_(newDataArray, targetSheetName) {
               rowsToUpdate.push({ row: target, data: alignedRow });
             }
           } else {
-            // 검토 탭: 키는 같은데 값이 다르면 덮어쓰지 않고 _검토대기로 보냅니다.
+            // 검토 탭: 엑셀에 값이 있는 열만 비교합니다. (엑셀이 비어있는 칸은 "정보 없음"이므로 기존 값을 유지)
+            const diffOf = r => providedIdx.filter(i =>
+              normalizeKeyPart_(alignedRow[i]) !== '' && cmpNorm_(existingData[r - 1][i]) !== cmpNorm_(alignedRow[i]));
+            if (existingRows.some(r => diffOf(r).length === 0)) {
+              identicalCount++;
+              continue;
+            }
+            const diffIdx = diffOf(target);
+            const targetRow = existingData[target - 1];
+            const fillable = diffIdx.every(i => normalizeKeyPart_(targetRow[i]) === '');
+            const queuedFill = fillByKey[key];
+            if (queuedFill && rowsEqual_(queuedFill.data, alignedRow, providedIdx)) {
+              identicalCount++;
+              continue;
+            }
+            if (fillable && !queuedFill) {
+              // 기존 행에서 비어있던 칸(조치일/조치사항/결과 등)만 새로 채워지는 경우: 잃는 정보가 없으므로 자동 반영
+              const f = { row: target, data: alignedRow, cols: diffIdx };
+              fillByKey[key] = f;
+              rowsToFill.push(f);
+              continue;
+            }
+            // 기존에 값이 있는데 다른 값이 온 경우: 덮어쓰지 않고 _검토대기로 보냅니다.
             const list = conflictsByKey[key] || (conflictsByKey[key] = []);
             if (list.some(c => rowsEqual_(c.data, alignedRow, providedIdx))) {
               identicalCount++;
               continue;
             }
-            const c = { row: target, data: alignedRow, excelRow: i + 1 };
+            const c = {
+              row: target, data: alignedRow, excelRow: i + 1,
+              diffIdx: diffIdx,
+              writeIdx: providedIdx.filter(k => normalizeKeyPart_(alignedRow[k]) !== ''),
+            };
             list.push(c);
             if (pendingKeys.has(`${targetSheetName}|${target}|${JSON.stringify(alignedRow)}`)) {
               alreadyPendingCount++;
@@ -499,7 +697,7 @@ function analyzeUpload_(newDataArray, targetSheetName) {
 
   return {
     ss, sheet, targetSheetName, sheetHeaders, existingData, providedIdx, policy,
-    rowsToAppend, rowsToUpdate, conflicts,
+    rowsToAppend, rowsToUpdate, rowsToFill, conflicts,
     invalidRows, invalidCount, blankCount, identicalCount, alreadyPendingCount, totalRows: newDataArray.length,
     MAX_REPORTED,
   };
@@ -519,6 +717,7 @@ function previewExcelUpload(newDataArray, targetSheetName) {
     totalRows: plan.totalRows,
     appendCount: plan.rowsToAppend.length,
     updateCount: plan.rowsToUpdate.length,
+    fillCount: plan.rowsToFill.length,
     conflictCount: plan.conflicts.length,
     identicalCount: plan.identicalCount,
     alreadyPendingCount: plan.alreadyPendingCount,
@@ -527,8 +726,10 @@ function previewExcelUpload(newDataArray, targetSheetName) {
     appendSamples: plan.rowsToAppend.slice(0, SAMPLE).map(describeRow_),
     updateSamples: plan.rowsToUpdate.slice(0, SAMPLE).map(u =>
       `${u.row}행: ${diffSummary_(h, plan.existingData[u.row - 1], u.data, plan.providedIdx)}`),
+    fillSamples: plan.rowsToFill.slice(0, SAMPLE).map(f =>
+      `${f.row}행: ${diffSummary_(h, plan.existingData[f.row - 1], f.data, f.cols)}`),
     conflictSamples: plan.conflicts.slice(0, SAMPLE).map(c =>
-      `${c.row}행 (엑셀 ${c.excelRow}행): ${diffSummary_(h, plan.existingData[c.row - 1], c.data, plan.providedIdx)}`),
+      `${c.row}행 (엑셀 ${c.excelRow}행): ${diffSummary_(h, plan.existingData[c.row - 1], c.data, c.diffIdx)}`),
     invalidSamples: plan.invalidRows.slice(0, SAMPLE),
   };
 }
@@ -541,9 +742,9 @@ function uploadExcelData(newDataArray, targetSheetName) {
 
   return withLock_(function() {
     const plan = analyzeUpload_(newDataArray, targetSheetName);
-    const { rowsToAppend, rowsToUpdate, conflicts, invalidRows, invalidCount, blankCount, identicalCount, alreadyPendingCount, MAX_REPORTED } = plan;
+    const { rowsToAppend, rowsToUpdate, rowsToFill, conflicts, invalidRows, invalidCount, blankCount, identicalCount, alreadyPendingCount, MAX_REPORTED } = plan;
 
-    if (rowsToAppend.length === 0 && rowsToUpdate.length === 0 && conflicts.length === 0 && identicalCount === 0 && alreadyPendingCount === 0) {
+    if (rowsToAppend.length === 0 && rowsToUpdate.length === 0 && rowsToFill.length === 0 && conflicts.length === 0 && identicalCount === 0 && alreadyPendingCount === 0) {
       const reasonMsg = invalidRows.length
         ? `\n\n제외 사유:\n${invalidRows.join('\n')}`
         : '';
@@ -563,19 +764,28 @@ function uploadExcelData(newDataArray, targetSheetName) {
           JSON.stringify(plainRow_(existingData[u.row - 1])),
         ]));
       }
+      if (rowsToFill.length > 0) {
+        appendLogRows_(getOrCreateLogSheet_(ss, LOG_SHEETS.history), rowsToFill.map(f => [
+          now, who, targetSheetName, f.row, '업로드 빈칸 채움',
+          diffSummary_(sheetHeaders, existingData[f.row - 1], f.data, f.cols),
+          JSON.stringify(plainRow_(existingData[f.row - 1])),
+        ]));
+      }
       if (conflicts.length > 0) {
         appendLogRows_(getOrCreateLogSheet_(ss, LOG_SHEETS.review), conflicts.map(c => [
           now, who, targetSheetName, c.row, '대기',
-          diffSummary_(sheetHeaders, existingData[c.row - 1], c.data, providedIdx),
+          diffSummary_(sheetHeaders, existingData[c.row - 1], c.data, c.diffIdx),
           JSON.stringify(plainRow_(existingData[c.row - 1])),
           JSON.stringify(c.data),
-          JSON.stringify(providedIdx),
+          // verify: 반영 시 "그 사이 행이 안 바뀌었는지" 확인할 열 / write: 실제로 덮어쓸 열(엑셀에 값이 있는 열만)
+          JSON.stringify({ verify: providedIdx, write: c.writeIdx }),
           '',
         ]));
       }
 
       // ---- 1) 기존 행 업데이트 (엑셀에 있던 열만 덮어씀 — A열 No. 수식과 엑셀에 없는 열은 그대로) ----
       rowsToUpdate.forEach(u => writeProvidedCols_(sheet, u.row, u.data, providedIdx));
+      rowsToFill.forEach(f => writeProvidedCols_(sheet, f.row, f.data, f.cols));
 
       // ---- 2) 신규 행 추가 (한 번에 일괄 저장) ----
       if (rowsToAppend.length > 0) {
@@ -589,6 +799,7 @@ function uploadExcelData(newDataArray, targetSheetName) {
 
     let msg = `성공! 신규 ${rowsToAppend.length}건 추가`
       + (rowsToUpdate.length > 0 ? `, 기존 ${rowsToUpdate.length}건 덮어쓰기(변경 전 내용은 '${LOG_SHEETS.history.name}' 탭에 기록)` : '')
+      + (rowsToFill.length > 0 ? `, 기존 ${rowsToFill.length}건은 빈 칸만 채움(기존 값 유지)` : '')
       + (conflicts.length > 0 ? `, 값이 달라 덮어쓰지 않은 ${conflicts.length}건은 '${LOG_SHEETS.review.name}' 탭에 보관` : '')
       + (alreadyPendingCount > 0 ? `, 이미 검토 대기 중인 ${alreadyPendingCount}건은 중복 등록하지 않음` : '')
       + (identicalCount > 0 ? `, 이미 동일한 ${identicalCount}건 건너뜀` : '')
@@ -639,7 +850,10 @@ function applyReviewedChanges() {
         if (!sheet) throw new Error(`'${tabName}' 탭을 찾을 수 없음`);
         const oldSnapshot = JSON.parse(r[6]);
         const newData = JSON.parse(r[7]);
-        const providedIdx = JSON.parse(r[8]);
+        const cfg = JSON.parse(r[8]);
+        // 예전 형식(배열)과 새 형식({verify, write}) 모두 지원
+        const verifyIdx = Array.isArray(cfg) ? cfg : cfg.verify;
+        const writeIdx = Array.isArray(cfg) ? cfg : cfg.write;
 
         if (status === '신규추가') {
           appendRows_(sheet, [newData], newData.length);
@@ -650,7 +864,7 @@ function applyReviewedChanges() {
 
         // '반영': 그 사이 시트가 바뀌어 행 번호가 밀리거나 값이 달라졌으면 잘못 덮어쓰지 않도록 중단합니다.
         const current = sheet.getRange(sheetRow, 1, 1, newData.length).getValues()[0];
-        if (!rowsEqual_(current, oldSnapshot, providedIdx)) {
+        if (!rowsEqual_(current, oldSnapshot, verifyIdx)) {
           throw new Error(`${sheetRow}행이 검토 등록 이후 변경되어 덮어쓰지 않았습니다. 내용 확인 후 다시 처리하세요.`);
         }
         historyRows.push([
@@ -659,7 +873,7 @@ function applyReviewedChanges() {
           JSON.stringify(plainRow_(current)),
         ]);
         // 이력을 먼저 확정(아래 appendLogRows_)해야 하므로 실제 쓰기는 이력 기록 뒤로 미룹니다.
-        pendingWrites.push({ sheet, sheetRow, newData, providedIdx });
+        pendingWrites.push({ sheet, sheetRow, newData, providedIdx: writeIdx });
         statusOut[i] = ['완료(반영)', `${now.toLocaleString()} ${who}`];
         applied++;
       } catch (e) {
@@ -698,7 +912,7 @@ function applyReviewedChanges() {
 
 // 여기 등록된 모든 탭(DEDUPE_KEYS에 정의된 전부)을 한 번에 확인/정리합니다.
 function previewDuplicateCleanup() {
-  const msg = Object.keys(DEDUPE_KEYS)
+  const msg = Object.keys(CLEANUP_KEYS)
     .map(name => `■ ${name}\n` + cleanupDuplicates_(name, false))
     .join('\n\n');
   Logger.log(msg);
@@ -706,7 +920,7 @@ function previewDuplicateCleanup() {
 }
 
 function runDuplicateCleanup() {
-  const msg = withLock_(() => Object.keys(DEDUPE_KEYS)
+  const msg = withLock_(() => Object.keys(CLEANUP_KEYS)
     .map(name => `■ ${name}\n` + cleanupDuplicates_(name, true))
     .join('\n\n'));
   Logger.log(msg);
@@ -714,9 +928,9 @@ function runDuplicateCleanup() {
 }
 
 function cleanupDuplicates_(targetSheetName, actuallyDelete) {
-  const dedupeCols = DEDUPE_KEYS[targetSheetName];
+  const dedupeCols = CLEANUP_KEYS[targetSheetName];
   if (!dedupeCols) {
-    throw new Error(`'${targetSheetName}' 탭에는 중복 판단 기준(DEDUPE_KEYS)이 정의되어 있지 않습니다.`);
+    throw new Error(`'${targetSheetName}' 탭에는 중복 판단 기준(CLEANUP_KEYS)이 정의되어 있지 않습니다.`);
   }
 
   const ss = openSpreadsheet_();
@@ -768,7 +982,7 @@ function cleanupDuplicates_(targetSheetName, actuallyDelete) {
     }
   }
 
-  const buildKey = (row) => idxList.map(i => normalizeKeyPart_(row[i])).join('|');
+  const buildKey = (row) => idxList.map(i => cmpNorm_(row[i])).join('|');
 
   // 같은 키를 가진 행 번호들을 등장 순서대로 모읍니다.
   const keyToRows = {}; // key -> [시트 행 번호(1-based), ...]
