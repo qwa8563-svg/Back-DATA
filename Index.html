@@ -32,11 +32,41 @@
     .excel-btn { padding: 8px 15px; background: #28a745; color: white; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; white-space: nowrap; }
     .excel-btn:hover { background: #218838; }
 
+    .review-btn { padding: 8px 15px; background: #6c757d; color: white; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; white-space: nowrap; }
+    .review-btn:hover { background: #565e64; }
+    .hint { font-size: 12px; color: #666; margin: 0; }
+
+    /* 업로드 미리보기 창 */
+    #previewModal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 9000; overflow-y: auto; }
+    #previewBox { background: white; max-width: 640px; margin: 40px auto; border-radius: 8px; padding: 24px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+    #previewBox h3 { margin: 0 0 12px; color: #1f3c88; }
+    .count-table { width: 100%; border-collapse: collapse; margin-bottom: 12px; font-size: 14px; }
+    .count-table td { padding: 6px 8px; border-bottom: 1px solid #eee; }
+    .count-table td.num { text-align: right; font-weight: bold; width: 70px; }
+    .sample-title { font-weight: bold; font-size: 13px; margin: 12px 0 4px; color: #333; }
+    .sample-list { margin: 0; padding: 8px 12px; background: #f7f8fa; border-radius: 4px; font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 140px; overflow-y: auto; list-style: none; }
+    .preview-actions { display: flex; gap: 10px; margin-top: 18px; }
+    .preview-actions button { flex: 1; padding: 11px; border: none; border-radius: 4px; font-size: 15px; font-weight: bold; cursor: pointer; }
+    #previewConfirm { background: #0052cc; color: white; }
+    #previewConfirm:disabled { background: #aab; cursor: not-allowed; }
+    #previewCancel { background: #ddd; color: #333; }
+
     #loading { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); color: white; font-size: 20px; text-align: center; line-height: 100vh; z-index: 9999; }
   </style>
 </head>
 <body>
   <div id="loading">처리 중입니다... 잠시만 기다려주세요⏳</div>
+
+  <div id="previewModal">
+    <div id="previewBox">
+      <h3 id="previewTitle">업로드 미리보기</h3>
+      <div id="previewBody"></div>
+      <div class="preview-actions">
+        <button id="previewCancel" onclick="closePreview()">취소</button>
+        <button id="previewConfirm" onclick="confirmUpload()">이대로 업로드</button>
+      </div>
+    </div>
+  </div>
 
   <div class="container">
 
@@ -54,7 +84,11 @@
           <option value="[M] 채권">[M] 채권</option>
           <option value="[D] 채권">[D] 채권</option>
         </select>
-        <button class="excel-btn" onclick="handleExcelUpload()">업로드 및 병합</button>
+        <button class="excel-btn" onclick="handleExcelUpload()">미리보기 후 업로드</button>
+      </div>
+      <div class="excel-row">
+        <p class="hint" style="flex: 1;">값이 다른 중복 건은 자동으로 덮어쓰지 않고 시트의 '_검토대기' 탭에 보관됩니다. 그 탭의 '상태'를 반영 / 신규추가 / 무시 중 하나로 바꾼 뒤 오른쪽 버튼을 누르세요.</p>
+        <button class="review-btn" onclick="handleApplyReview()">검토 대기 반영</button>
       </div>
     </div>
 
@@ -216,7 +250,14 @@
       evt.currentTarget.classList.add('active');
     }
 
-    // 엑셀 업로드 실행 함수
+    // 미리보기 후 확인 시 업로드할 데이터
+    let pendingUpload = null;
+
+    function esc(t) {
+      return String(t).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    // 1단계: 엑셀을 읽고 서버에서 "신규/덮어쓰기/검토대기/동일/제외" 건수만 미리 계산 (시트는 수정하지 않음)
     function handleExcelUpload() {
       const fileInput = document.getElementById('excelFile');
       const sheetName = document.getElementById('targetSheetForExcel').value;
@@ -232,31 +273,119 @@
       const reader = new FileReader();
 
       reader.onload = function(e) {
-        const data = new Uint8Array(e.target.result);
-        const workbook = XLSX.read(data, {type: 'array'});
-        const firstSheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[firstSheetName];
+        let excelDataArray;
+        try {
+          const data = new Uint8Array(e.target.result);
+          const workbook = XLSX.read(data, {type: 'array'});
+          const firstSheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[firstSheetName];
+          excelDataArray = XLSX.utils.sheet_to_json(worksheet, {
+            header: 1,
+            raw: false,
+            dateNF: 'yyyy-mm-dd'
+          });
+        } catch (err) {
+          document.getElementById('loading').style.display = 'none';
+          alert("엑셀 파일을 읽지 못했습니다: " + err.message);
+          return;
+        }
 
-        const excelDataArray = XLSX.utils.sheet_to_json(worksheet, {
-          header: 1,
-          raw: false,
-          dateNF: 'yyyy-mm-dd'
-        });
+        pendingUpload = { data: excelDataArray, sheetName: sheetName };
 
         google.script.run
-          .withSuccessHandler(function(msg) {
+          .withSuccessHandler(function(p) {
             document.getElementById('loading').style.display = 'none';
-            alert(msg);
-            fileInput.value = '';
+            showPreview(p);
           })
           .withFailureHandler(function(err) {
             document.getElementById('loading').style.display = 'none';
-            alert("업로드 실패: " + err.message);
+            pendingUpload = null;
+            alert("미리보기 실패: " + err.message);
           })
-          .uploadExcelData(excelDataArray, sheetName);
+          .previewExcelUpload(excelDataArray, sheetName);
       };
 
       reader.readAsArrayBuffer(file);
+    }
+
+    function showPreview(p) {
+      const isOverwrite = p.policy === 'overwrite';
+      const rows = [
+        ['신규 추가', p.appendCount],
+        [isOverwrite ? '기존 행 덮어쓰기 (변경 전 내용은 _변경이력에 기록)' : '기존 행 덮어쓰기', p.updateCount],
+        ['값이 달라 검토 대기로 보관 (덮어쓰지 않음)', p.conflictCount],
+        ['이미 동일 → 건너뜀', p.identicalCount],
+        ['이미 검토 대기 중 → 중복 등록 안 함', p.alreadyPendingCount || 0],
+        ['제외 (드롭다운 값 오류)', p.invalidCount],
+        ['빈 행 제외', p.blankCount],
+      ].filter(r => r[1] > 0 || r[0] === '신규 추가');
+
+      let html = '<table class="count-table">'
+        + rows.map(r => '<tr><td>' + esc(r[0]) + '</td><td class="num">' + r[1] + '건</td></tr>').join('')
+        + '</table>';
+
+      const sections = [
+        ['신규 추가 예시', p.appendSamples, p.appendCount],
+        ['덮어쓸 내용 예시', p.updateSamples, p.updateCount],
+        ['검토 대기로 보낼 내용 예시', p.conflictSamples, p.conflictCount],
+        ['제외되는 행', p.invalidSamples, p.invalidCount],
+      ];
+      sections.forEach(function(sec) {
+        if (!sec[1].length) return;
+        html += '<div class="sample-title">' + esc(sec[0]) + (sec[2] > sec[1].length ? ' (상위 ' + sec[1].length + '건 / 전체 ' + sec[2] + '건)' : '') + '</div>'
+          + '<ul class="sample-list">' + sec[1].map(t => '<li>' + esc(t) + '</li>').join('') + '</ul>';
+      });
+
+      document.getElementById('previewTitle').textContent = '업로드 미리보기 — ' + p.sheetName;
+      document.getElementById('previewBody').innerHTML = html;
+      const nothing = (p.appendCount + p.updateCount + p.conflictCount) === 0;
+      const confirmBtn = document.getElementById('previewConfirm');
+      confirmBtn.disabled = nothing;
+      confirmBtn.textContent = nothing ? '반영할 내용 없음' : '이대로 업로드';
+      document.getElementById('previewModal').style.display = 'block';
+    }
+
+    function closePreview() {
+      document.getElementById('previewModal').style.display = 'none';
+      pendingUpload = null;
+    }
+
+    // 2단계: 미리보기를 확인한 뒤에만 실제로 시트에 씁니다.
+    function confirmUpload() {
+      if (!pendingUpload) return;
+      const upload = pendingUpload;
+      document.getElementById('previewModal').style.display = 'none';
+      document.getElementById('loading').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function(msg) {
+          document.getElementById('loading').style.display = 'none';
+          pendingUpload = null;
+          alert(msg);
+          document.getElementById('excelFile').value = '';
+        })
+        .withFailureHandler(function(err) {
+          document.getElementById('loading').style.display = 'none';
+          pendingUpload = null;
+          alert("업로드 실패: " + err.message);
+        })
+        .uploadExcelData(upload.data, upload.sheetName);
+    }
+
+    // '_검토대기' 탭에서 담당자가 상태를 바꿔 둔 항목을 실제로 처리합니다.
+    function handleApplyReview() {
+      if (!confirm("'_검토대기' 탭에서 상태를 반영 / 신규추가 / 무시로 바꿔둔 항목을 처리합니다. 진행할까요?")) return;
+      document.getElementById('loading').style.display = 'block';
+      google.script.run
+        .withSuccessHandler(function(msg) {
+          document.getElementById('loading').style.display = 'none';
+          alert(msg);
+        })
+        .withFailureHandler(function(err) {
+          document.getElementById('loading').style.display = 'none';
+          alert("처리 실패: " + err.message);
+        })
+        .applyReviewedChanges();
     }
 
     // 수동 입력 저장 함수
