@@ -207,13 +207,12 @@
       <form id="form5" class="grid-form">
         <div><label>팀</label><select id="t5_d1"><option value="D테크">D테크</option><option value="M테크">M테크</option></select></div>
         <div><label class="req">발송일</label><input type="date" id="t5_d2" required></div>
-        <div><label>지역</label><input type="text" id="t5_d3"></div>
-        <div><label class="req">국가</label><input type="text" id="t5_d4" required></div>
-        <div><label>대리점명</label><input type="text" id="t5_d5"></div>
-        <div><label>제품분류</label><input type="text" id="t5_d6"></div>
-        <div class="full-width"><label class="req">제품명(사양)</label><input type="text" id="t5_d7" required></div>
-        <div><label>통화 (무상이면 비움)</label><select id="t5_d8"><option value=""></option><option value="USD">USD</option><option value="EUR">EUR</option><option value="JPY">JPY</option></select></div>
-        <div><label>매출액 (무상이면 비움)</label><input type="number" id="t5_d9" min="0" step="any"></div>
+        <div><label class="req">국가</label><input type="text" id="t5_d3" required></div>
+        <div><label>대리점명</label><input type="text" id="t5_d4"></div>
+        <div class="full-width"><label class="req">제품명(사양)</label><input type="text" id="t5_d5" required></div>
+        <div><label>통화 (무상이면 비움)</label><select id="t5_d6"><option value=""></option><option value="USD">USD</option><option value="EUR">EUR</option><option value="JPY">JPY</option></select></div>
+        <div><label>매출액 (무상이면 비움)</label><input type="number" id="t5_d7" min="0" step="any"></div>
+        <p class="hint full-width" style="margin:0;">지역과 제품분류는 국가·제품명으로 시트가 자동 입력합니다.</p>
       </form>
       <button class="submit-btn" onclick="submitData('form5', '[M/D] 매출')">저장하기</button>
     </div>

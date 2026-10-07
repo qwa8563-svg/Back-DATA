@@ -36,8 +36,8 @@ const MANUAL_RULES = {
     required: ['d1', 'd3', 'd9', 'd12'], dates: ['d3', 'd4'], numbers: [], order: [['d3', 'd4']],
   },
   '[M/D] 매출': {
-    labels: { d2: '발송일', d4: '국가', d7: '제품명(사양)', d9: '매출액' },
-    required: ['d2', 'd4', 'd7'], dates: ['d2'], numbers: ['d9'], order: [],
+    labels: { d2: '발송일', d3: '국가', d5: '제품명(사양)', d7: '매출액' },
+    required: ['d2', 'd3', 'd5'], dates: ['d2'], numbers: ['d7'], order: [],
   },
   '[M] 채권': MD_BOND_RULES_,
   '[D] 채권': MD_BOND_RULES_,
@@ -102,8 +102,8 @@ const MANUAL_FIELDS = {
   '[M/D] AS': [['d1', '팀'], ['d2', '유형'], ['d3', '접수일'], ['d4', '조치일'], ['d5', '지역'], ['d6', '국가/거래처'], ['d7', '제품분류'],
               ['d8', '제품명(사양)'], ['d9', '제조번호/코드'], ['d10', '보증구분'], ['d11', '담당자'], ['d12', '증상/내용'],
               ['d13', '조치사항'], ['d14', '불량구분'], ['d15', '결과']],
-  '[M/D] 매출': [['d1', '팀'], ['d2', '발송일'], ['d3', '지역'], ['d4', '국가'], ['d5', '대리점명'], ['d6', '제품분류'],
-                ['d7', '제품명(사양)'], ['d8', '통화'], ['d9', '매출액']],
+  // 지역(국가로 계산)과 제품분류(제품명으로 계산)는 시트 수식이 채우므로 입력 항목이 아닙니다.
+  '[M/D] 매출': [['d1', '팀'], ['d2', '발송일'], ['d3', '국가'], ['d4', '대리점명'], ['d5', '제품명(사양)'], ['d6', '통화'], ['d7', '매출액']],
   '[M] 채권': [['d1', '채널구분'], ['d2', '법인/거래처'], ['d3', '국가'], ['d4', '통화'], ['d5', '청구금액'], ['d6', '입금액'],
               ['balance', '잔액'], ['d7', '발송일'], ['d8', '입금예정일'], ['d9', '연체여부'], ['d10', '비고']],
 };
@@ -186,6 +186,7 @@ function saveMultiData(data, targetSheetName, mode) {
 
     if (mode !== 'append') {
       const keyIdx = resolveDedupeIdx_(targetSheetName, headers, true);
+      assertKeyHasNoFormulaCols_(targetSheetName, keyIdx, headers, layout);
       if (keyIdx) {
         const buildKey = r => keyIdx.map(i => cmpNorm_(r[i])).join('|');
         const key = buildKey(rowData);
@@ -243,7 +244,7 @@ const DEDUPE_KEYS = {
   '[K] 유지보수': ['병원명', 'S/N', '유지보수 계약일'],
   '[K] 채권': ['장비구분', '거래처', '청구금액', '발생일'],
   '[M/D] AS': ['팀', '접수일', '제조번호/코드', '증상/내용'],
-  '[M/D] 매출': ['팀', '발송일', '국가', '대리점명', '제품분류', '제품명(사양)'],
+  '[M/D] 매출': ['팀', '발송일', '국가', '대리점명', '제품명(사양)'],
   '[M] 채권': ['채널구분', '법인/거래처', '국가', '청구금액', '발송일'],
   '[D] 채권': ['채널구분', '법인/거래처', '국가', '청구금액', '발송일'],
 };
@@ -319,6 +320,16 @@ function resolveDedupeIdx_(targetSheetName, sheetHeaders, useNameMapping) {
     throw new Error(`'${targetSheetName}' 탭 헤더에서 중복 판단 컬럼 [${missing.join(', ')}]을(를) 찾지 못했습니다. 시트 헤더 이름을 확인하거나 Code.gs의 DEDUPE_KEYS를 수정하세요.`);
   }
   return list;
+}
+
+// 수식으로 계산되는 열(예: 국가로 계산되는 지역)은 엑셀/입력값으로 채울 수 없어서 중복 판단 키로 쓰면 항상 어긋납니다.
+function assertKeyHasNoFormulaCols_(targetSheetName, dedupeIdx, headers, layout) {
+  if (!dedupeIdx || DEDUPE_KEYS[targetSheetName] === '__ALL__') return;
+  const bad = dedupeIdx.filter(i => layout.formulaCols[i]);
+  if (bad.length) {
+    throw new Error(`'${targetSheetName}' 탭의 중복 판단 기준 열 [${bad.map(i => headers[i]).join(', ')}]은(는) 시트에서 수식으로 계산되는 열이라 키로 쓸 수 없습니다. `
+      + `Code.gs의 DEDUPE_KEYS에서 해당 열을 빼 주세요.`);
+  }
 }
 
 // 특정 열에 "목록에서 선택" 데이터 확인 규칙이 걸려있으면 허용값 배열을, 없으면 null을 반환합니다.
@@ -606,6 +617,7 @@ function analyzeUpload_(newDataArray, targetSheetName) {
   // ---- 중복 체크 준비: 이 탭에 대해 정의된 키 컬럼들의 시트 내 위치를 찾습니다. ----
   const policy = DUPLICATE_POLICY[targetSheetName] || 'overwrite';
   let dedupeIdx = resolveDedupeIdx_(targetSheetName, sheetHeaders, useNameMapping);
+  assertKeyHasNoFormulaCols_(targetSheetName, dedupeIdx, sheetHeaders, layout);
   // 중복 판단 기준 열이 엑셀에 없으면(열 이름 불일치 등) 값이 항상 비어 있어 "이미 등록된 행"을 하나도 못 찾고
   // 전부 신규로 쌓이게 됩니다. 조용히 넘어가지 않고 막습니다.
   if (dedupeIdx && useNameMapping && DEDUPE_KEYS[targetSheetName] !== '__ALL__') {
