@@ -23,6 +23,7 @@
     .grid-form { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 20px; }
     .full-width { grid-column: 1 / -1; }
 
+    label.req::after { content: ' *'; color: #d32f2f; }
     label { display: block; font-weight: bold; margin-bottom: 5px; color: #444; font-size: 13px; }
     input, select { width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; font-size: 13px; }
 
@@ -32,11 +33,56 @@
     .excel-btn { padding: 8px 15px; background: #28a745; color: white; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; white-space: nowrap; }
     .excel-btn:hover { background: #218838; }
 
+    .review-btn { padding: 8px 15px; background: #6c757d; color: white; border: none; border-radius: 4px; font-weight: bold; cursor: pointer; white-space: nowrap; }
+    .review-btn:hover { background: #565e64; }
+    .hint { font-size: 12px; color: #666; margin: 0; }
+
+    /* 업로드 미리보기 창 */
+    #dupModal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 9500; overflow-y: auto; }
+    #dupBox { background: white; max-width: 520px; margin: 60px auto; border-radius: 8px; padding: 24px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+    #dupBox h3 { margin: 0 0 12px; color: #c62828; }
+    #previewModal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 9000; overflow-y: auto; }
+    #previewBox { background: white; max-width: 640px; margin: 40px auto; border-radius: 8px; padding: 24px; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+    #previewBox h3 { margin: 0 0 12px; color: #1f3c88; }
+    .count-table { width: 100%; border-collapse: collapse; margin-bottom: 12px; font-size: 14px; }
+    .count-table td { padding: 6px 8px; border-bottom: 1px solid #eee; }
+    .count-table td.num { text-align: right; font-weight: bold; width: 70px; }
+    .sample-title { font-weight: bold; font-size: 13px; margin: 12px 0 4px; color: #333; }
+    .sample-list { margin: 0; padding: 8px 12px; background: #f7f8fa; border-radius: 4px; font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 140px; overflow-y: auto; list-style: none; }
+    .preview-actions { display: flex; gap: 10px; margin-top: 18px; }
+    .preview-actions button { flex: 1; padding: 11px; border: none; border-radius: 4px; font-size: 15px; font-weight: bold; cursor: pointer; }
+    #previewConfirm { background: #0052cc; color: white; }
+    #previewConfirm:disabled { background: #aab; cursor: not-allowed; }
+    #previewCancel { background: #ddd; color: #333; }
+
     #loading { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); color: white; font-size: 20px; text-align: center; line-height: 100vh; z-index: 9999; }
   </style>
 </head>
 <body>
   <div id="loading">처리 중입니다... 잠시만 기다려주세요⏳</div>
+
+  <div id="dupModal">
+    <div id="dupBox">
+      <h3>같은 건이 이미 있습니다</h3>
+      <div id="dupBody"></div>
+      <div class="preview-actions" style="flex-direction:column;">
+        <button id="dupOverwrite" style="background:#0052cc;color:white;" onclick="resolveDuplicate('overwrite')">기존 행에 덮어쓰기 (입력한 칸만 갱신, 이전 내용은 _변경이력에 기록)</button>
+        <button style="background:#28a745;color:white;" onclick="resolveDuplicate('append')">별개 건이므로 새 행으로 추가</button>
+        <button style="background:#ddd;color:#333;" onclick="resolveDuplicate(null)">취소</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="previewModal">
+    <div id="previewBox">
+      <h3 id="previewTitle">업로드 미리보기</h3>
+      <div id="previewBody"></div>
+      <div class="preview-actions">
+        <button id="previewCancel" onclick="closePreview()">취소</button>
+        <button id="previewConfirm" onclick="confirmUpload()">이대로 업로드</button>
+      </div>
+    </div>
+  </div>
 
   <div class="container">
 
@@ -54,7 +100,11 @@
           <option value="[M] 채권">[M] 채권</option>
           <option value="[D] 채권">[D] 채권</option>
         </select>
-        <button class="excel-btn" onclick="handleExcelUpload()">업로드 및 병합</button>
+        <button class="excel-btn" onclick="handleExcelUpload()">미리보기 후 업로드</button>
+      </div>
+      <div class="excel-row">
+        <p class="hint" style="flex: 1;">값이 다른 중복 건은 자동으로 덮어쓰지 않고 시트의 '_검토대기' 탭에 보관됩니다. 그 탭의 '상태'를 반영 / 신규추가 / 무시 중 하나로 바꾼 뒤 오른쪽 버튼을 누르세요.</p>
+        <button class="review-btn" onclick="handleApplyReview()">검토 대기 반영</button>
       </div>
     </div>
 
@@ -73,20 +123,20 @@
     <div id="tab1" class="tab-content active">
       <h3 style="color:#0052cc;">[K] AS/매출 수동 등록</h3>
       <form id="form1" class="grid-form">
-        <div><label>접수일</label><input type="date" id="t1_d1"></div>
+        <div><label class="req">접수일</label><input type="date" id="t1_d1" required></div>
         <div><label>조치일</label><input type="date" id="t1_d2"></div>
         <div><label>지역</label><input type="text" id="t1_d3"></div>
         <div><label>제품분류</label><input type="text" id="t1_d4"></div>
         <div><label>제품명(사양)</label><input type="text" id="t1_d5"></div>
-        <div><label>제조번호/코드</label><input type="text" id="t1_d6"></div>
+        <div><label class="req">제조번호/코드</label><input type="text" id="t1_d6" required></div>
         <div><label>보증구분</label><select id="t1_d7"><option value="무상">무상</option><option value="유상">유상</option></select></div>
         <div><label>담당자</label><input type="text" id="t1_d8"></div>
-        <div class="full-width"><label>증상/내용</label><input type="text" id="t1_d9"></div>
+        <div class="full-width"><label class="req">증상/내용</label><input type="text" id="t1_d9" required></div>
         <div class="full-width"><label>조치사항</label><input type="text" id="t1_d10"></div>
         <div><label>불량구분</label><input type="text" id="t1_d11"></div>
         <div><label>결과</label><input type="text" id="t1_d14"></div>
         <div><label>통화</label><select id="t1_d12"><option value="KRW">KRW</option><option value="USD">USD</option><option value="EUR">EUR</option></select></div>
-        <div><label>수리비용</label><input type="number" id="t1_d13" value="0"></div>
+        <div><label>수리비용</label><input type="number" id="t1_d13" min="0" value="0"></div>
       </form>
       <button class="submit-btn" onclick="submitData('form1', '[K] AS/매출')">저장하기</button>
     </div>
@@ -95,18 +145,18 @@
     <div id="tab2" class="tab-content">
       <h3 style="color:#0052cc;">[K] 유지보수 수동 등록</h3>
       <form id="form2" class="grid-form">
-        <div><label>병원명</label><input type="text" id="t2_d1"></div>
+        <div><label class="req">병원명</label><input type="text" id="t2_d1" required></div>
         <div><label>제품명(사양)</label><input type="text" id="t2_d2"></div>
-        <div><label>S/N</label><input type="text" id="t2_d3"></div>
+        <div><label class="req">S/N</label><input type="text" id="t2_d3" required></div>
         <div><label>장비 납품일</label><input type="date" id="t2_d4"></div>
         <div><label>유지보수 계약일</label><input type="date" id="t2_d5"></div>
         <div><label>계약 만료일</label><input type="date" id="t2_d6"></div>
         <div><label>입금일</label><input type="text" id="t2_d7" placeholder="예: 매월 말일"></div>
         <div><label>통화</label><select id="t2_d8"><option value="KRW">KRW</option></select></div>
-        <div><label>유지보수 금액(월납)</label><input type="number" id="t2_d9" value="0"></div>
+        <div><label>유지보수 금액(월납)</label><input type="number" id="t2_d9" min="0" value="0"></div>
         <div><label>월</label><input type="text" id="t2_d10" placeholder="예: 1월"></div>
-        <div><label>유효 계약 수</label><input type="number" id="t2_d11" value="0"></div>
-        <div><label>유지보수 합계(원)</label><input type="number" id="t2_d12" value="0"></div>
+        <div><label>유효 계약 수</label><input type="number" id="t2_d11" min="0" value="0"></div>
+        <div><label>유지보수 합계(원)</label><input type="number" id="t2_d12" min="0" value="0"></div>
         <div class="full-width"><label>비고</label><input type="text" id="t2_d13"></div>
       </form>
       <button class="submit-btn" onclick="submitData('form2', '[K] 유지보수')">저장하기</button>
@@ -117,10 +167,10 @@
       <h3 style="color:#0052cc;">[K] 채권 수동 등록 (잔액 자동계산)</h3>
       <form id="form3" class="grid-form">
         <div><label>장비구분</label><input type="text" id="t3_d1"></div>
-        <div><label>거래처</label><input type="text" id="t3_d2"></div>
-        <div><label>청구금액</label><input type="number" id="t3_d3" value="0"></div>
-        <div><label>입금액</label><input type="number" id="t3_d4" value="0"></div>
-        <div><label>발생일</label><input type="date" id="t3_d5"></div>
+        <div><label class="req">거래처</label><input type="text" id="t3_d2" required></div>
+        <div><label>청구금액</label><input type="number" id="t3_d3" min="0" value="0"></div>
+        <div><label>입금액</label><input type="number" id="t3_d4" min="0" value="0"></div>
+        <div><label class="req">발생일</label><input type="date" id="t3_d5" required></div>
         <div><label>회수일자</label><input type="date" id="t3_d6"></div>
         <div><label>연체여부</label><select id="t3_d7"><option value="미회수">미회수</option><option value="회수">회수</option></select></div>
         <div class="full-width"><label>비고</label><input type="text" id="t3_d8"></div>
@@ -134,17 +184,17 @@
       <form id="form4" class="grid-form">
         <div><label>팀</label><select id="t4_d1"><option value="M테크">M테크</option><option value="D테크">D테크</option></select></div>
         <div><label>유형</label><input type="text" id="t4_d2" value="서비스"></div>
-        <div><label>접수일</label><input type="date" id="t4_d3"></div>
+        <div><label class="req">접수일</label><input type="date" id="t4_d3" required></div>
         <div><label>조치일</label><input type="date" id="t4_d4"></div>
         <div><label>지역</label><input type="text" id="t4_d5"></div>
         <div><label>국가/거래처</label><input type="text" id="t4_d6"></div>
         <div><label>제품분류</label><input type="text" id="t4_d7"></div>
         <div><label>제품명(사양)</label><input type="text" id="t4_d8"></div>
-        <div><label>제조번호/코드</label><input type="text" id="t4_d9"></div>
+        <div><label class="req">제조번호/코드</label><input type="text" id="t4_d9" required></div>
         <div><label>보증구분</label><select id="t4_d10"><option value="무상">무상</option><option value="유상">유상</option></select></div>
         <div><label>담당자</label><input type="text" id="t4_d11"></div>
         <div><label>불량구분</label><input type="text" id="t4_d14"></div>
-        <div class="full-width"><label>증상/내용</label><input type="text" id="t4_d12"></div>
+        <div class="full-width"><label class="req">증상/내용</label><input type="text" id="t4_d12" required></div>
         <div class="full-width"><label>조치사항</label><input type="text" id="t4_d13"></div>
         <div class="full-width"><label>결과</label><input type="text" id="t4_d15"></div>
       </form>
@@ -156,16 +206,14 @@
       <h3 style="color:#0052cc;">[M/D] 매출 (발송 해외) 수동 등록</h3>
       <form id="form5" class="grid-form">
         <div><label>팀</label><select id="t5_d1"><option value="D테크">D테크</option><option value="M테크">M테크</option></select></div>
-        <div><label>발송일</label><input type="date" id="t5_d2"></div>
-        <div><label>지역</label><input type="text" id="t5_d3"></div>
-        <div><label>국가/거래처</label><input type="text" id="t5_d4"></div>
-        <div><label>제품분류</label><input type="text" id="t5_d5"></div>
-        <div><label>제품명(사양)</label><input type="text" id="t5_d6"></div>
-        <div><label>제조번호/코드</label><input type="text" id="t5_d7"></div>
-        <div><label>보증구분</label><select id="t5_d8"><option value="무상">무상</option><option value="유상">유상</option></select></div>
-        <div><label>담당자</label><input type="text" id="t5_d9"></div>
-        <div><label>통화</label><select id="t5_d11"><option value="USD">USD</option><option value="EUR">EUR</option></select></div>
-        <div class="full-width"><label>증상/내용</label><input type="text" id="t5_d10"></div>
+        <div><label class="req">발송일</label><input type="date" id="t5_d2" required></div>
+        <div><label>출하처</label><select id="t5_d3"><option value=""></option><option value="DHL">DHL</option><option value="FedEx">FedEx</option><option value="UPS">UPS</option><option value="포워더">포워더</option><option value="장비와 함께">장비와 함께</option><option value="직접전달">직접전달</option><option value="국내발송">국내발송</option></select></div>
+        <div><label class="req">국가</label><input type="text" id="t5_d4" required></div>
+        <div class="full-width"><label>대리점명</label><input type="text" id="t5_d5"></div>
+        <div class="full-width"><label class="req">제품명(사양)</label><input type="text" id="t5_d6" required></div>
+        <div><label>통화 (무상이면 비움)</label><select id="t5_d7"><option value=""></option><option value="KRW">KRW</option><option value="USD">USD</option><option value="EUR">EUR</option><option value="JPY">JPY</option><option value="CNY">CNY</option></select></div>
+        <div><label>매출액 (무상이면 비움)</label><input type="number" id="t5_d8" min="0" step="any"></div>
+        <p class="hint full-width" style="margin:0;">지역과 제품분류는 국가·제품명으로 시트가 자동 입력합니다.</p>
       </form>
       <button class="submit-btn" onclick="submitData('form5', '[M/D] 매출')">저장하기</button>
     </div>
@@ -175,12 +223,12 @@
       <h3 style="color:#0052cc;">[M] 채권 수동 등록 (잔액 자동계산)</h3>
       <form id="form6" class="grid-form">
         <div><label>채널구분</label><input type="text" id="t6_d1" placeholder="예: GAI"></div>
-        <div><label>법인/거래처</label><input type="text" id="t6_d2"></div>
+        <div><label class="req">법인/거래처</label><input type="text" id="t6_d2" required></div>
         <div><label>국가</label><input type="text" id="t6_d3"></div>
         <div><label>통화</label><select id="t6_d4"><option value="$">$ (USD)</option><option value="€">€ (EUR)</option><option value="¥">¥ (JPY)</option></select></div>
-        <div><label>청구금액</label><input type="number" id="t6_d5" value="0"></div>
-        <div><label>입금액</label><input type="number" id="t6_d6" value="0"></div>
-        <div><label>발송일</label><input type="date" id="t6_d7"></div>
+        <div><label>청구금액</label><input type="number" id="t6_d5" min="0" value="0"></div>
+        <div><label>입금액</label><input type="number" id="t6_d6" min="0" value="0"></div>
+        <div><label class="req">발송일</label><input type="date" id="t6_d7" required></div>
         <div><label>입금예정일</label><input type="date" id="t6_d8"></div>
         <div><label>연체여부</label><select id="t6_d9"><option value="정상">정상</option><option value="연체">연체</option></select></div>
         <div class="full-width"><label>비고</label><input type="text" id="t6_d10"></div>
@@ -193,12 +241,12 @@
       <h3 style="color:#0052cc;">[D] 채권 수동 등록 (잔액 자동계산)</h3>
       <form id="form7" class="grid-form">
         <div><label>채널구분</label><input type="text" id="t7_d1" value="법인"></div>
-        <div><label>법인/거래처</label><input type="text" id="t7_d2"></div>
+        <div><label class="req">법인/거래처</label><input type="text" id="t7_d2" required></div>
         <div><label>국가</label><input type="text" id="t7_d3"></div>
         <div><label>통화</label><select id="t7_d4"><option value="$">$ (USD)</option><option value="€">€ (EUR)</option><option value="¥">¥ (JPY)</option></select></div>
-        <div><label>청구금액</label><input type="number" id="t7_d5" value="0"></div>
-        <div><label>입금액</label><input type="number" id="t7_d6" value="0"></div>
-        <div><label>발송일</label><input type="date" id="t7_d7"></div>
+        <div><label>청구금액</label><input type="number" id="t7_d5" min="0" value="0"></div>
+        <div><label>입금액</label><input type="number" id="t7_d6" min="0" value="0"></div>
+        <div><label class="req">발송일</label><input type="date" id="t7_d7" required></div>
         <div><label>입금예정일</label><input type="date" id="t7_d8"></div>
         <div><label>연체여부</label><select id="t7_d9"><option value="정상">정상</option><option value="연체">연체</option></select></div>
         <div class="full-width"><label>비고</label><input type="text" id="t7_d10"></div>
@@ -216,7 +264,14 @@
       evt.currentTarget.classList.add('active');
     }
 
-    // 엑셀 업로드 실행 함수
+    // 미리보기 후 확인 시 업로드할 데이터
+    let pendingUpload = null;
+
+    function esc(t) {
+      return String(t).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    }
+
+    // 1단계: 엑셀을 읽고 서버에서 "신규/덮어쓰기/검토대기/동일/제외" 건수만 미리 계산 (시트는 수정하지 않음)
     function handleExcelUpload() {
       const fileInput = document.getElementById('excelFile');
       const sheetName = document.getElementById('targetSheetForExcel').value;
@@ -232,39 +287,145 @@
       const reader = new FileReader();
 
       reader.onload = function(e) {
-        const data = new Uint8Array(e.target.result);
-        const workbook = XLSX.read(data, {type: 'array'});
-        const firstSheetName = workbook.SheetNames[0];
-        const worksheet = workbook.Sheets[firstSheetName];
+        let excelDataArray;
+        try {
+          const data = new Uint8Array(e.target.result);
+          // 날짜 셀은 Date로 읽어 yyyy-mm-dd 문자열로 직접 바꿉니다. (서식 문자열로 읽으면 'm/d/yy' 같은 표기가 되어 시트 날짜와 어긋남)
+          // 숫자는 서식 문자열("13,455,000.00")이 아니라 숫자 그대로 읽습니다. 빈 칸은 '' 로 채웁니다.
+          const workbook = XLSX.read(data, {type: 'array', cellDates: true});
+          const firstSheetName = workbook.SheetNames[0];
+          const worksheet = workbook.Sheets[firstSheetName];
+          const pad2 = n => ('0' + n).slice(-2);
+          const dateToText = d => {
+            // 시간대 보정: 현지 자정 / UTC 자정 어느 쪽으로 만들어진 Date든 같은 날짜가 나오도록 12시간을 더해 UTC 기준으로 읽음
+            const x = new Date(d.getTime() + 12 * 3600 * 1000);
+            return x.getUTCFullYear() + '-' + pad2(x.getUTCMonth() + 1) + '-' + pad2(x.getUTCDate());
+          };
+          excelDataArray = XLSX.utils.sheet_to_json(worksheet, {header: 1, raw: true, defval: ''})
+            .map(row => row.map(v => (v instanceof Date) ? dateToText(v) : v));
+        } catch (err) {
+          document.getElementById('loading').style.display = 'none';
+          alert("엑셀 파일을 읽지 못했습니다: " + err.message);
+          return;
+        }
 
-        const excelDataArray = XLSX.utils.sheet_to_json(worksheet, {
-          header: 1,
-          raw: false,
-          dateNF: 'yyyy-mm-dd'
-        });
+        pendingUpload = { data: excelDataArray, sheetName: sheetName };
 
         google.script.run
-          .withSuccessHandler(function(msg) {
+          .withSuccessHandler(function(p) {
             document.getElementById('loading').style.display = 'none';
-            alert(msg);
-            fileInput.value = '';
+            showPreview(p);
           })
           .withFailureHandler(function(err) {
             document.getElementById('loading').style.display = 'none';
-            alert("업로드 실패: " + err.message);
+            pendingUpload = null;
+            alert("미리보기 실패: " + err.message);
           })
-          .uploadExcelData(excelDataArray, sheetName);
+          .previewExcelUpload(excelDataArray, sheetName);
       };
 
       reader.readAsArrayBuffer(file);
     }
 
-    // 수동 입력 저장 함수
+    function showPreview(p) {
+      const isOverwrite = p.policy === 'overwrite';
+      const rows = [
+        ['신규 추가', p.appendCount],
+        [isOverwrite ? '기존 행 덮어쓰기 (변경 전 내용은 _변경이력에 기록)' : '기존 행 덮어쓰기', p.updateCount],
+        ['기존 행의 빈 칸만 채움 (기존 값은 그대로)', p.fillCount || 0],
+        ['값이 달라 검토 대기로 보관 (덮어쓰지 않음)', p.conflictCount],
+        ['이미 동일 → 건너뜀', p.identicalCount],
+        ['이미 검토 대기 중 → 중복 등록 안 함', p.alreadyPendingCount || 0],
+        ['제외 (값 오류: 드롭다운 목록 밖 값 / 키 열 비어 있음)', p.invalidCount],
+        ['빈 행 제외', p.blankCount],
+      ].filter(r => r[1] > 0 || r[0] === '신규 추가');
+
+      let html = '<table class="count-table">'
+        + rows.map(r => '<tr><td>' + esc(r[0]) + '</td><td class="num">' + r[1] + '건</td></tr>').join('')
+        + '</table>';
+
+      const sections = [
+        ['신규 추가 예시', p.appendSamples, p.appendCount],
+        ['덮어쓸 내용 예시', p.updateSamples, p.updateCount],
+        ['빈 칸을 채울 내용 예시', p.fillSamples || [], p.fillCount || 0],
+        ['검토 대기로 보낼 내용 예시', p.conflictSamples, p.conflictCount],
+        ['제외되는 행', p.invalidSamples, p.invalidCount],
+      ];
+      sections.forEach(function(sec) {
+        if (!sec[1].length) return;
+        html += '<div class="sample-title">' + esc(sec[0]) + (sec[2] > sec[1].length ? ' (상위 ' + sec[1].length + '건 / 전체 ' + sec[2] + '건)' : '') + '</div>'
+          + '<ul class="sample-list">' + sec[1].map(t => '<li>' + esc(t) + '</li>').join('') + '</ul>';
+      });
+
+      if (p.keyInfo && p.appendCount > 0) {
+        html += '<div class="sample-title">이미 등록한 파일인데 신규로 나온다면 — 중복 판단 기준 비교</div>'
+          + '<ul class="sample-list"><li>판단에 쓰는 열: ' + esc(p.keyInfo.cols.join(' | ')) + '</li>'
+          + p.keyInfo.newKeys.map(t => '<li>신규로 본 행: ' + esc(t) + '</li>').join('')
+          + p.keyInfo.sheetKeys.map(t => '<li>시트 마지막 행: ' + esc(t) + '</li>').join('')
+          + '</ul>';
+      }
+
+      document.getElementById('previewTitle').textContent = '업로드 미리보기 — ' + p.sheetName;
+      document.getElementById('previewBody').innerHTML = html;
+      const nothing = (p.appendCount + p.updateCount + (p.fillCount || 0) + p.conflictCount) === 0;
+      const confirmBtn = document.getElementById('previewConfirm');
+      confirmBtn.disabled = nothing;
+      confirmBtn.textContent = nothing ? '반영할 내용 없음' : '이대로 업로드';
+      document.getElementById('previewModal').style.display = 'block';
+    }
+
+    function closePreview() {
+      document.getElementById('previewModal').style.display = 'none';
+      pendingUpload = null;
+    }
+
+    // 2단계: 미리보기를 확인한 뒤에만 실제로 시트에 씁니다.
+    function confirmUpload() {
+      if (!pendingUpload) return;
+      const upload = pendingUpload;
+      document.getElementById('previewModal').style.display = 'none';
+      document.getElementById('loading').style.display = 'block';
+
+      google.script.run
+        .withSuccessHandler(function(msg) {
+          document.getElementById('loading').style.display = 'none';
+          pendingUpload = null;
+          alert(msg);
+          document.getElementById('excelFile').value = '';
+        })
+        .withFailureHandler(function(err) {
+          document.getElementById('loading').style.display = 'none';
+          pendingUpload = null;
+          alert("업로드 실패: " + err.message);
+        })
+        .uploadExcelData(upload.data, upload.sheetName);
+    }
+
+    // '_검토대기' 탭에서 담당자가 상태를 바꿔 둔 항목을 실제로 처리합니다.
+    function handleApplyReview() {
+      if (!confirm("'_검토대기' 탭에서 상태를 반영 / 신규추가 / 무시로 바꿔둔 항목을 처리합니다. 진행할까요?")) return;
+      document.getElementById('loading').style.display = 'block';
+      google.script.run
+        .withSuccessHandler(function(msg) {
+          document.getElementById('loading').style.display = 'none';
+          alert(msg);
+        })
+        .withFailureHandler(function(err) {
+          document.getElementById('loading').style.display = 'none';
+          alert("처리 실패: " + err.message);
+        })
+        .applyReviewedChanges();
+    }
+
+    // 수동 입력 저장: 브라우저 필수/숫자 검사 → 서버에서 다시 검증 + 중복 검사
+    let pendingSave = null;
+
     function submitData(formId, sheetName) {
       const form = document.getElementById(formId);
+      if (!form.reportValidity()) return;   // 필수 항목 / 음수 금액 등을 바로 알려줌 (최종 검증은 서버가 다시 함)
+
       const inputs = form.querySelectorAll('input, select');
       let data = {};
-
       inputs.forEach(input => {
         const idParts = input.id.split('_');
         if(idParts.length === 2) {
@@ -272,19 +433,46 @@
         }
       });
 
-      document.getElementById('loading').style.display = 'block';
+      // 입금액이 청구금액보다 큰 경우는 정상일 수도 있어 막지 않고 한 번 더 확인만 합니다.
+      const bill = form.querySelector('[id$="_d3"][type="number"], [id$="_d5"][type="number"]');
+      const paid = form.querySelector('[id$="_d4"][type="number"], [id$="_d6"][type="number"]');
+      if (/채권/.test(sheetName) && bill && paid && Number(paid.value) > Number(bill.value)) {
+        if (!confirm("입금액이 청구금액보다 큽니다. 그래도 저장할까요?")) return;
+      }
 
+      sendSave(form, data, sheetName, undefined);
+    }
+
+    function sendSave(form, data, sheetName, mode) {
+      document.getElementById('loading').style.display = 'block';
       google.script.run
-        .withSuccessHandler(function(msg) {
-          alert(msg);
+        .withSuccessHandler(function(res) {
           document.getElementById('loading').style.display = 'none';
-          form.reset();
+          if (res.status === 'duplicate') {
+            pendingSave = { form: form, data: data, sheetName: sheetName };
+            document.getElementById('dupBody').innerHTML =
+              '<p>' + esc(res.message) + (res.matchCount > 1 ? ' (같은 건이 ' + res.matchCount + '개 있어 마지막 행 기준)' : '') + '</p>'
+              + '<div class="sample-title">기존 → 이번 입력 (달라지는 칸)</div>'
+              + '<ul class="sample-list"><li>' + esc(res.diff) + '</li></ul>';
+            document.getElementById('dupModal').style.display = 'block';
+            return;
+          }
+          alert(res.message);
+          if (res.status === 'saved') form.reset();
         })
         .withFailureHandler(function(err) {
           alert("저장 실패: " + err.message);
           document.getElementById('loading').style.display = 'none';
         })
-        .saveMultiData(data, sheetName);
+        .saveMultiData(data, sheetName, mode);
+    }
+
+    function resolveDuplicate(mode) {
+      document.getElementById('dupModal').style.display = 'none';
+      const p = pendingSave;
+      pendingSave = null;
+      if (!mode || !p) return;
+      sendSave(p.form, p.data, p.sheetName, mode);
     }
   </script>
 </body>
