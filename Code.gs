@@ -591,7 +591,9 @@ function analyzeUpload_(newDataArray, targetSheetName) {
     const candidateColMap = new Array(candidateHeaders.length).fill(-1);
     let candidateMatchCount = 0;
     for (let s = 1; s < candidateHeaders.length; s++) {
-      const idx = excelHeaders.indexOf(normalize(candidateHeaders[s]));
+      // 빈 헤더 칸끼리는 "일치"로 세지 않습니다. (엑셀 1행에 빈 칸이 있으면 제목줄/빈 줄이 실제 헤더 행보다 점수가 높게 나와 헤더 행을 잘못 고르던 문제)
+      const headerKey = normalize(candidateHeaders[s]);
+      const idx = headerKey === '' ? -1 : excelHeaders.indexOf(headerKey);
       candidateColMap[s] = idx;
       if (idx !== -1) candidateMatchCount++;
     }
@@ -718,6 +720,18 @@ function analyzeUpload_(newDataArray, targetSheetName) {
     if (!hasContent) {
       blankCount++;
       continue;
+    }
+
+    // 중복 판단 기준 열이 절반 미만만 채워진 행은 제외합니다. (예: 순번만 있는 빈 뼈대 행이 신규 행으로 대량 쌓이는 것을 막음)
+    if (dedupeIdx && Array.isArray(DEDUPE_KEYS[targetSheetName])) {
+      const filledKeys = dedupeIdx.filter(k => normalizeKeyPart_(alignedRow[k]) !== '').length;
+      if (filledKeys < Math.ceil(dedupeIdx.length / 2)) {
+        if (invalidRows.length < MAX_REPORTED) {
+          invalidRows.push(`엑셀 ${i + 1}행: 중복 판단 열(${dedupeIdx.map(k => sheetHeaders[k]).join(', ')}) 중 ${filledKeys}개만 채워져 있음`);
+        }
+        invalidCount++;
+        continue;
+      }
     }
 
     // 드롭다운 허용값 사전 검증 (값이 비어있지 않은데 목록에 없으면 이 행은 제외)
@@ -941,10 +955,10 @@ function uploadExcelData(newDataArray, targetSheetName) {
       + (conflicts.length > 0 ? `, 값이 달라 덮어쓰지 않은 ${conflicts.length}건은 '${LOG_SHEETS.review.name}' 탭에 보관` : '')
       + (alreadyPendingCount > 0 ? `, 이미 검토 대기 중인 ${alreadyPendingCount}건은 중복 등록하지 않음` : '')
       + (identicalCount > 0 ? `, 이미 동일한 ${identicalCount}건 건너뜀` : '')
-      + (invalidCount > 0 ? `, 제외 ${invalidCount}건(드롭다운 값 오류)` : '')
+      + (invalidCount > 0 ? `, 제외 ${invalidCount}건(값 오류)` : '')
       + ` · 빈 행 ${blankCount}개 제외`;
     if (invalidRows.length) {
-      msg += `\n\n제외된 행(드롭다운 목록에 없는 값, 최대 ${MAX_REPORTED}건 표시):\n${invalidRows.join('\n')}`
+      msg += `\n\n제외된 행(드롭다운 목록에 없는 값 / 중복 판단 열이 비어 있음, 최대 ${MAX_REPORTED}건 표시):\n${invalidRows.join('\n')}`
         + (invalidCount > invalidRows.length ? `\n...외 ${invalidCount - invalidRows.length}건 더` : '');
     }
     return msg;

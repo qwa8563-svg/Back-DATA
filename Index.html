@@ -330,7 +330,7 @@
         ['값이 달라 검토 대기로 보관 (덮어쓰지 않음)', p.conflictCount],
         ['이미 동일 → 건너뜀', p.identicalCount],
         ['이미 검토 대기 중 → 중복 등록 안 함', p.alreadyPendingCount || 0],
-        ['제외 (드롭다운 값 오류)', p.invalidCount],
+        ['제외 (값 오류: 드롭다운 목록 밖 값 / 키 열 비어 있음)', p.invalidCount],
         ['빈 행 제외', p.blankCount],
       ].filter(r => r[1] > 0 || r[0] === '신규 추가');
 
