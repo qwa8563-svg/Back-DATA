@@ -172,7 +172,15 @@ function saveMultiData(data, targetSheetName, mode) {
       const errors = [];
       for (let i = 1; i < rowData.length; i++) {
         const v = rowData[i];
-        if (v === '' || lastRow <= headerRowIdx + 1) continue;
+        if (v === '') continue;
+        const codeList = codeAllowedValues_(targetSheetName, headers[i]);
+        if (codeList) {
+          const canon = canonicalAllowed_(codeList, v);
+          if (canon) rowData[i] = canon;
+          else errors.push(`${colLabel(i)}: '${v}'은(는) 선택 가능한 값이 아닙니다. (${codeList.join(', ')})`);
+          continue;
+        }
+        if (lastRow <= headerRowIdx + 1) continue;
         const allowed = getAllowedValuesForColumn_(sheet, i + 1, lastRow);
         if (allowed && allowed.indexOf(v) === -1) errors.push(`${colLabel(i)}: '${v}'은(는) 선택 가능한 목록에 없습니다.`);
       }
@@ -294,6 +302,26 @@ function headerIndex_(headers, name) {
   const n = normHeader_(name);
   for (let i = 0; i < headers.length; i++) if (normHeader_(headers[i]) === n) return i;
   return -1;
+}
+
+// 시트에 드롭다운 규칙이 없어도 코드에서 허용값을 정해 두는 열. (탭 → 헤더 이름 → 허용값)
+// 엑셀 업로드와 수동 입력 양쪽에 같은 목록이 적용됩니다.
+const CODE_ALLOWED_VALUES = {
+  '[M/D] 매출': { '출하처': ['DHL', 'FedEx', 'UPS', '포워더', '장비와 함께', '직접전달', '국내발송'] },
+};
+
+function codeAllowedValues_(targetSheetName, headerName) {
+  const m = CODE_ALLOWED_VALUES[targetSheetName];
+  if (!m) return null;
+  const key = Object.keys(m).find(k => normHeader_(k) === normHeader_(headerName));
+  return key ? m[key] : null;
+}
+
+// 대소문자/공백 차이("fedex", "Fed Ex")는 표준 표기("FedEx")로 맞춥니다. 맞는 값이 없으면 null.
+function canonicalAllowed_(list, v) {
+  const n = x => String(x).toLowerCase().replace(/\s+/g, '');
+  const t = n(v);
+  return list.find(x => n(x) === t) || null;
 }
 
 // 탭의 DEDUPE_KEYS 정의를 시트 헤더 기준 "키 열 인덱스 배열"로 바꿉니다. 키가 없는 탭이면 null.
@@ -627,6 +655,11 @@ function analyzeUpload_(newDataArray, targetSheetName) {
       allowedValuesByCol[s] = getAllowedValuesForColumn_(sheet, s + 1, validationCheckRow);
     }
   }
+  const codeListCols = {};
+  for (let s = 1; s < sheetHeaders.length; s++) {
+    const codeList = codeAllowedValues_(targetSheetName, sheetHeaders[s]);
+    if (codeList) { allowedValuesByCol[s] = codeList; codeListCols[s] = true; }
+  }
 
   // ---- 중복 체크 준비: 이 탭에 대해 정의된 키 컬럼들의 시트 내 위치를 찾습니다. ----
   const policy = DUPLICATE_POLICY[targetSheetName] || 'overwrite';
@@ -738,9 +771,13 @@ function analyzeUpload_(newDataArray, targetSheetName) {
     let invalidReason = null;
     for (let s = 1; s < sheetHeaders.length; s++) {
       const allowed = allowedValuesByCol[s];
-      const val = alignedRow[s];
+      let val = alignedRow[s];
+      if (allowed && codeListCols[s] && val !== "") {
+        const canon = canonicalAllowed_(allowed, val);
+        if (canon) { alignedRow[s] = canon; val = canon; }
+      }
       if (allowed && val !== "" && allowed.indexOf(val) === -1) {
-        invalidReason = `${sheetHeaders[s]} 값 '${val}'이(가) 허용 목록에 없음`;
+        invalidReason = `${sheetHeaders[s]} 값 '${val}'이(가) 허용 목록에 없음` + (codeListCols[s] ? ` (허용: ${allowed.join(', ')})` : '');
         break;
       }
     }
