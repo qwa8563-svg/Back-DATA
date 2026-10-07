@@ -289,14 +289,19 @@
         let excelDataArray;
         try {
           const data = new Uint8Array(e.target.result);
-          const workbook = XLSX.read(data, {type: 'array'});
+          // 날짜 셀은 Date로 읽어 yyyy-mm-dd 문자열로 직접 바꿉니다. (서식 문자열로 읽으면 'm/d/yy' 같은 표기가 되어 시트 날짜와 어긋남)
+          // 숫자는 서식 문자열("13,455,000.00")이 아니라 숫자 그대로 읽습니다. 빈 칸은 '' 로 채웁니다.
+          const workbook = XLSX.read(data, {type: 'array', cellDates: true});
           const firstSheetName = workbook.SheetNames[0];
           const worksheet = workbook.Sheets[firstSheetName];
-          excelDataArray = XLSX.utils.sheet_to_json(worksheet, {
-            header: 1,
-            raw: false,
-            dateNF: 'yyyy-mm-dd'
-          });
+          const pad2 = n => ('0' + n).slice(-2);
+          const dateToText = d => {
+            // 시간대 보정: 현지 자정 / UTC 자정 어느 쪽으로 만들어진 Date든 같은 날짜가 나오도록 12시간을 더해 UTC 기준으로 읽음
+            const x = new Date(d.getTime() + 12 * 3600 * 1000);
+            return x.getUTCFullYear() + '-' + pad2(x.getUTCMonth() + 1) + '-' + pad2(x.getUTCDate());
+          };
+          excelDataArray = XLSX.utils.sheet_to_json(worksheet, {header: 1, raw: true, defval: ''})
+            .map(row => row.map(v => (v instanceof Date) ? dateToText(v) : v));
         } catch (err) {
           document.getElementById('loading').style.display = 'none';
           alert("엑셀 파일을 읽지 못했습니다: " + err.message);
