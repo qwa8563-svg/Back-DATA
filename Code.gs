@@ -518,9 +518,15 @@ function sheetLayoutInfo_(sheet, width, allValues) {
   const info = { firstDataRow, formulaCols: {}, srcFormulas: {}, dataEnd: firstDataRow - 1 };
   if (lastRow < firstDataRow) return info;
 
+  // 수식 열 판단: "첫 데이터 행"(수식 템플릿 행)과 맨 아래 5개 행을 봅니다. 수식이 첫 행에만 걸려 있는 열(예: 4행에만 있는 적용환율/원화환산)도
+  // 수식 열로 인식해야 값으로 덮어써서 지우는 사고가 없습니다. 아래쪽 행의 수식이 있으면 그것을 복사 원본으로 우선 씁니다.
+  const addFormulas = (fromRow, toRow) => {
+    sheet.getRange(fromRow, 1, toRow - fromRow + 1, width).getFormulasR1C1()
+      .forEach(row => row.forEach((f, c) => { if (f) { info.formulaCols[c] = true; info.srcFormulas[c] = f; } }));
+  };
   const scanFrom = Math.max(firstDataRow, lastRow - 4);
-  const formulas = sheet.getRange(scanFrom, 1, lastRow - scanFrom + 1, width).getFormulasR1C1();
-  formulas.forEach(row => row.forEach((f, c) => { if (f) { info.formulaCols[c] = true; info.srcFormulas[c] = f; } }));
+  if (scanFrom > firstDataRow) addFormulas(firstDataRow, firstDataRow);
+  addFormulas(scanFrom, lastRow);
 
   const values = allValues || sheet.getRange(1, 1, lastRow, width).getValues();
   for (let r = Math.min(values.length, lastRow); r >= firstDataRow; r--) {
@@ -535,6 +541,12 @@ function appendRows_(sheet, rows, width) {
   const info = sheetLayoutInfo_(sheet, width);
   const startRow = info.dataEnd + 1;
   const n = rows.length;
+  // 마지막 안전장치: 값을 쓸 칸에 이미 수식이 들어 있으면 그 열은 값으로 덮어쓰지 않고 수식을 유지합니다.
+  const targetEnd = Math.min(sheet.getLastRow(), startRow + n - 1);
+  if (targetEnd >= startRow) {
+    sheet.getRange(startRow, 1, targetEnd - startRow + 1, width).getFormulasR1C1()
+      .forEach(row => row.forEach((f, c) => { if (f) { info.formulaCols[c] = true; if (!info.srcFormulas[c]) info.srcFormulas[c] = f; } }));
+  }
   const valueCols = [];
   for (let c = 0; c < width; c++) if (!info.formulaCols[c]) valueCols.push(c);
   contiguousRuns_(valueCols).forEach(run => {
