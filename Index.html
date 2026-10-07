@@ -208,14 +208,12 @@
         <div><label>팀</label><select id="t5_d1"><option value="D테크">D테크</option><option value="M테크">M테크</option></select></div>
         <div><label class="req">발송일</label><input type="date" id="t5_d2" required></div>
         <div><label>지역</label><input type="text" id="t5_d3"></div>
-        <div><label>국가/거래처</label><input type="text" id="t5_d4"></div>
-        <div><label>제품분류</label><input type="text" id="t5_d5"></div>
-        <div><label>제품명(사양)</label><input type="text" id="t5_d6"></div>
-        <div><label class="req">제조번호/코드</label><input type="text" id="t5_d7" required></div>
-        <div><label>보증구분</label><select id="t5_d8"><option value="무상">무상</option><option value="유상">유상</option></select></div>
-        <div><label>담당자</label><input type="text" id="t5_d9"></div>
-        <div><label>통화</label><select id="t5_d11"><option value="USD">USD</option><option value="EUR">EUR</option></select></div>
-        <div class="full-width"><label>증상/내용</label><input type="text" id="t5_d10"></div>
+        <div><label class="req">국가</label><input type="text" id="t5_d4" required></div>
+        <div><label>대리점명</label><input type="text" id="t5_d5"></div>
+        <div><label>제품분류</label><input type="text" id="t5_d6"></div>
+        <div class="full-width"><label class="req">제품명(사양)</label><input type="text" id="t5_d7" required></div>
+        <div><label>통화 (무상이면 비움)</label><select id="t5_d8"><option value=""></option><option value="USD">USD</option><option value="EUR">EUR</option><option value="JPY">JPY</option></select></div>
+        <div><label>매출액 (무상이면 비움)</label><input type="number" id="t5_d9" min="0" step="any"></div>
       </form>
       <button class="submit-btn" onclick="submitData('form5', '[M/D] 매출')">저장하기</button>
     </div>

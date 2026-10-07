@@ -36,8 +36,8 @@ const MANUAL_RULES = {
     required: ['d1', 'd3', 'd9', 'd12'], dates: ['d3', 'd4'], numbers: [], order: [['d3', 'd4']],
   },
   '[M/D] 매출': {
-    labels: { d2: '발송일', d7: '제조번호/코드' },
-    required: ['d2', 'd7'], dates: ['d2'], numbers: [], order: [],
+    labels: { d2: '발송일', d4: '국가', d7: '제품명(사양)', d9: '매출액' },
+    required: ['d2', 'd4', 'd7'], dates: ['d2'], numbers: ['d9'], order: [],
   },
   '[M] 채권': MD_BOND_RULES_,
   '[D] 채권': MD_BOND_RULES_,
@@ -87,29 +87,51 @@ function validateManualInput_(data, rules) {
   return clean;
 }
 
-// 탭별 저장용 행(A열 No.는 수식 유지를 위해 비워둠)
-function buildManualRow_(targetSheetName, data) {
-  switch (targetSheetName) {
-    case '[K] AS/매출':
-      return ["", data.d1, data.d2, data.d3, data.d4, data.d5, data.d6, data.d7, data.d8, data.d9, data.d10, data.d11, data.d12, data.d13, data.d14];
-    case '[K] 유지보수':
-      // 시트에는 '유지보수 금액(월납)'(J열)과 '월'(L열) 사이에 빈 열(K열)이 있어서 한 칸을 비워 둡니다.
-      return ["", data.d1, data.d2, data.d3, data.d4, data.d5, data.d6, data.d7, data.d8, data.d9, "", data.d10, data.d11, data.d12, data.d13];
-    case '[K] 채권':
-      // 열 순서: 장비구분, 거래처, 청구금액, 입금액, 잔액(자동계산), 발생일, 회수일자, 연체여부, 비고
-      return ["", data.d1, data.d2, data.d3, data.d4, (Number(data.d3) || 0) - (Number(data.d4) || 0), data.d5, data.d6, data.d7, data.d8];
-    case '[M/D] AS':
-      return ["", data.d1, data.d2, data.d3, data.d4, data.d5, data.d6, data.d7, data.d8, data.d9, data.d10, data.d11, data.d12, data.d13, data.d14, data.d15];
-    case '[M/D] 매출':
-      // 시트에서 '증상/내용'은 K:L 두 칸이 병합되어 있고 '통화'는 M열이라서, L열은 비워 둡니다.
-      return ["", data.d1, data.d2, data.d3, data.d4, data.d5, data.d6, data.d7, data.d8, data.d9, data.d10, "", data.d11];
-    case '[M] 채권':
-    case '[D] 채권':
-      // 잔액 = 청구금액(d5) - 입금액(d6). (d4는 통화 기호라서 계산에 쓰면 안 됩니다)
-      return ["", data.d1, data.d2, data.d3, data.d4, data.d5, data.d6, (Number(data.d5) || 0) - (Number(data.d6) || 0), data.d7, data.d8, data.d9, data.d10];
-    default:
-      throw new Error("알 수 없는 양식입니다.");
+// 입력 화면 항목(d번호) → 시트 헤더 이름. 저장은 열 "위치"가 아니라 이 헤더 이름으로 찾아서 씁니다.
+// 시트에서 열을 추가/삭제/이동해도 헤더 이름만 같으면 값이 제 열에 들어가고, 헤더 이름이 없어지면 저장 전에 오류로 알려줍니다.
+// 'balance'는 입력값이 아니라 계산값(잔액)입니다.
+const MANUAL_FIELDS = {
+  '[K] AS/매출': [['d1', '접수일'], ['d2', '조치일'], ['d3', '지역'], ['d4', '제품분류'], ['d5', '제품명(사양)'], ['d6', '제조번호/코드'],
+                  ['d7', '보증구분'], ['d8', '담당자'], ['d9', '증상/내용'], ['d10', '조치사항'], ['d11', '불량구분'], ['d12', '통화'],
+                  ['d13', '수리비용'], ['d14', '결과']],
+  '[K] 유지보수': [['d1', '병원명'], ['d2', '제품명(사양)'], ['d3', 'S/N'], ['d4', '장비 납품일'], ['d5', '유지보수 계약일'], ['d6', '계약 만료일'],
+                  ['d7', '입금일'], ['d8', '통화'], ['d9', '유지보수 금액(월납)'], ['d10', '월'], ['d11', '유효 계약 수'],
+                  ['d12', '유지보수 합계(원)'], ['d13', '비고']],
+  '[K] 채권': [['d1', '장비구분'], ['d2', '거래처'], ['d3', '청구금액'], ['d4', '입금액'], ['balance', '잔액'], ['d5', '발생일'],
+              ['d6', '회수일자'], ['d7', '연체여부'], ['d8', '비고']],
+  '[M/D] AS': [['d1', '팀'], ['d2', '유형'], ['d3', '접수일'], ['d4', '조치일'], ['d5', '지역'], ['d6', '국가/거래처'], ['d7', '제품분류'],
+              ['d8', '제품명(사양)'], ['d9', '제조번호/코드'], ['d10', '보증구분'], ['d11', '담당자'], ['d12', '증상/내용'],
+              ['d13', '조치사항'], ['d14', '불량구분'], ['d15', '결과']],
+  '[M/D] 매출': [['d1', '팀'], ['d2', '발송일'], ['d3', '지역'], ['d4', '국가'], ['d5', '대리점명'], ['d6', '제품분류'],
+                ['d7', '제품명(사양)'], ['d8', '통화'], ['d9', '매출액']],
+  '[M] 채권': [['d1', '채널구분'], ['d2', '법인/거래처'], ['d3', '국가'], ['d4', '통화'], ['d5', '청구금액'], ['d6', '입금액'],
+              ['balance', '잔액'], ['d7', '발송일'], ['d8', '입금예정일'], ['d9', '연체여부'], ['d10', '비고']],
+};
+MANUAL_FIELDS['[D] 채권'] = MANUAL_FIELDS['[M] 채권'];
+
+// 잔액 = 청구금액 - 입금액 (K 채권은 d3/d4, M·D 채권은 d5/d6. M·D의 d4는 통화 기호라서 계산에 쓰면 안 됩니다)
+function manualBalance_(targetSheetName, data) {
+  return targetSheetName === '[K] 채권'
+    ? (Number(data.d3) || 0) - (Number(data.d4) || 0)
+    : (Number(data.d5) || 0) - (Number(data.d6) || 0);
+}
+
+// 헤더 이름으로 위치를 찾아 저장용 행을 만듭니다. (A열 No.와 입력 항목이 아닌 열은 비워둠 — 수식 열은 저장 시 수식이 채워짐)
+function buildManualRow_(targetSheetName, data, headers) {
+  const fields = MANUAL_FIELDS[targetSheetName];
+  if (!fields) throw new Error("알 수 없는 양식입니다.");
+  const row = new Array(headers.length).fill('');
+  const missing = [];
+  fields.forEach(f => {
+    const idx = headerIndex_(headers, f[1]);
+    if (idx === -1) { missing.push(f[1]); return; }
+    row[idx] = (f[0] === 'balance') ? manualBalance_(targetSheetName, data) : data[f[0]];
+  });
+  if (missing.length) {
+    throw new Error(`'${targetSheetName}' 탭 헤더에서 입력 항목 [${missing.join(', ')}]에 해당하는 열을 찾지 못했습니다. `
+      + `시트 헤더 이름과 Code.gs의 MANUAL_FIELDS(입력 화면 ↔ 헤더 매핑)를 확인하세요.`);
   }
+  return row;
 }
 
 // 키 컬럼명이 전부 등장하는 첫 행(상위 5행 이내)을 헤더 행으로 봅니다. 없으면 -1.
@@ -134,13 +156,14 @@ function saveMultiData(data, targetSheetName, mode) {
     const sheet = ss.getSheetByName(targetSheetName);
     if (!sheet) throw new Error(`'${targetSheetName}' 탭을 찾을 수 없습니다.`);
 
-    const rowData = buildManualRow_(targetSheetName, clean).map(v => v === undefined ? '' : v);
     const existingData = sheet.getDataRange().getValues();
     const headerRowIdx = detectHeaderRow_(existingData, targetSheetName);
     if (headerRowIdx === -1) {
       throw new Error(`'${targetSheetName}' 탭에서 중복 검사용 헤더를 찾지 못했습니다. 시트 헤더 이름과 Code.gs의 DEDUPE_KEYS를 확인하세요.`);
     }
     const headers = existingData[headerRowIdx];
+    const rowData = buildManualRow_(targetSheetName, clean, headers).map(v => v === undefined ? '' : v);
+    const layout = sheetLayoutInfo_(sheet, headers.length, existingData);
     const colLabel = i => (headers[i] || `${i + 1}번째 열`);
 
     // 드롭다운(목록) 열은 허용값 확인 — 저장 시 알 수 없는 시트 오류가 나는 대신 어느 항목이 문제인지 알려줍니다.
@@ -157,8 +180,9 @@ function saveMultiData(data, targetSheetName, mode) {
     }
 
     // 값이 입력된 열(A열 제외)만 비교/덮어쓰기 대상으로 봅니다. (비워 둔 칸이 기존 값을 지우지 않도록)
+    // 시트에 수식이 걸린 열(적용환율, 원화환산 등)은 수식이 계산하므로 비교/덮어쓰기에서 제외합니다.
     const filledIdx = [];
-    for (let i = 1; i < rowData.length; i++) if (rowData[i] !== '') filledIdx.push(i);
+    for (let i = 1; i < rowData.length; i++) if (rowData[i] !== '' && !layout.formulaCols[i]) filledIdx.push(i);
 
     if (mode !== 'append') {
       const keyIdx = resolveDedupeIdx_(targetSheetName, headers, true);
@@ -219,7 +243,7 @@ const DEDUPE_KEYS = {
   '[K] 유지보수': ['병원명', 'S/N', '유지보수 계약일'],
   '[K] 채권': ['장비구분', '거래처', '청구금액', '발생일'],
   '[M/D] AS': ['팀', '접수일', '제조번호/코드', '증상/내용'],
-  '[M/D] 매출': { exclude: ['수리비용'] },
+  '[M/D] 매출': ['팀', '발송일', '국가', '대리점명', '제품분류', '제품명(사양)'],
   '[M] 채권': ['채널구분', '법인/거래처', '국가', '청구금액', '발송일'],
   '[D] 채권': ['채널구분', '법인/거래처', '국가', '청구금액', '발송일'],
 };
@@ -232,6 +256,7 @@ const DEDUPE_KEYS = {
 const CLEANUP_KEYS = Object.assign({}, DEDUPE_KEYS, {
   '[K] 유지보수': '__ALL__',
   '[M/D] AS': '__ALL__',
+  '[M/D] 매출': '__ALL__',
   '[K] 채권': { exclude: ['입금액', '잔액'] },
   '[M] 채권': { exclude: ['입금액', '잔액'] },
   '[D] 채권': { exclude: ['입금액', '잔액'] },
@@ -241,12 +266,12 @@ const CLEANUP_KEYS = Object.assign({}, DEDUPE_KEYS, {
 // - 'review'   : 덮어쓰지 않고 '_검토대기' 탭에 기존값/새값을 나란히 보관 → 담당자가 반영/신규추가/무시 선택
 //                (같은 날 같은 기기·같은 증상의 별개 접수건이 조용히 사라지는 것을 막기 위함)
 // - 'overwrite': 최신 값으로 기존 행을 갱신 (변경 전 내용은 '_변경이력' 탭에 자동 기록)
-//                채권의 입금액, [M/D] 매출의 수리비용처럼 값이 바뀌는 게 정상 흐름인 탭
+//                채권의 입금액처럼 값이 바뀌는 게 정상 흐름인 탭
 const DUPLICATE_POLICY = {
   '[K] AS/매출': 'review',
   '[K] 유지보수': 'review',
   '[M/D] AS': 'review',
-  '[M/D] 매출': 'overwrite',
+  '[M/D] 매출': 'review',
   '[K] 채권': 'overwrite',
   '[M] 채권': 'overwrite',
   '[D] 채권': 'overwrite',
@@ -471,16 +496,42 @@ function writeProvidedCols_(sheet, row, data, providedIdx) {
   });
 }
 
-// 신규 행 일괄 추가 + A열(No.) 수식 복사.
-function appendRows_(sheet, rows, width) {
-  const startRow = sheet.getLastRow() + 1;
-  // A열(No.) 수식은 행마다 개별적으로 걸려있어 새 행엔 복사되어 있지 않으므로,
-  // 바로 위 행의 수식을 그대로 복사해 붙여넣습니다(상대참조라 행 번호는 자동으로 맞춰집니다).
-  const aboveFormula = startRow > 1 ? sheet.getRange(startRow - 1, 1).getFormulaR1C1() : '';
-  sheet.getRange(startRow, 1, rows.length, width).setValues(rows);
-  if (aboveFormula) {
-    sheet.getRange(startRow, 1, rows.length, 1).setFormulasR1C1(rows.map(() => [aboveFormula]));
+// 시트의 "데이터 끝 행"과 "수식 열"을 알아냅니다.
+// - 수식 열: 맨 아래 데이터 행들(최대 5행)에서 수식이 걸려 있는 열. 예) A열 No., 적용환율, 원화환산(원)
+// - 데이터 끝 행: 수식 열을 뺀 칸에 값이 하나라도 있는 마지막 행. 수식만 미리 채워 둔 빈 행(예: 새 탭의 4행)은 데이터로 보지 않으므로
+//   그 행부터 채우게 되어 중간에 빈 행이 남지 않습니다.
+// allValues(1행부터의 전체 값)를 이미 읽어 둔 경우 넘기면 시트를 다시 읽지 않습니다.
+function sheetLayoutInfo_(sheet, width, allValues) {
+  const firstDataRow = Math.max(sheet.getFrozenRows(), 1) + 1;
+  const lastRow = sheet.getLastRow();
+  const info = { firstDataRow, formulaCols: {}, srcFormulas: {}, dataEnd: firstDataRow - 1 };
+  if (lastRow < firstDataRow) return info;
+
+  const scanFrom = Math.max(firstDataRow, lastRow - 4);
+  const formulas = sheet.getRange(scanFrom, 1, lastRow - scanFrom + 1, width).getFormulasR1C1();
+  formulas.forEach(row => row.forEach((f, c) => { if (f) { info.formulaCols[c] = true; info.srcFormulas[c] = f; } }));
+
+  const values = allValues || sheet.getRange(1, 1, lastRow, width).getValues();
+  for (let r = Math.min(values.length, lastRow); r >= firstDataRow; r--) {
+    const row = values[r - 1];
+    if (row.some((v, c) => c < width && !info.formulaCols[c] && v !== '' && v !== null)) { info.dataEnd = r; break; }
   }
+  return info;
+}
+
+// 신규 행 일괄 추가. 수식 열(A열 No., 적용환율, 원화환산 등)은 값을 쓰지 않고 맨 아래 행의 수식을 상대참조로 복사해 채웁니다.
+function appendRows_(sheet, rows, width) {
+  const info = sheetLayoutInfo_(sheet, width);
+  const startRow = info.dataEnd + 1;
+  const n = rows.length;
+  const valueCols = [];
+  for (let c = 0; c < width; c++) if (!info.formulaCols[c]) valueCols.push(c);
+  contiguousRuns_(valueCols).forEach(run => {
+    sheet.getRange(startRow, run[0] + 1, n, run[1] - run[0] + 1).setValues(rows.map(r => r.slice(run[0], run[1] + 1)));
+  });
+  Object.keys(info.formulaCols).forEach(c => {
+    if (Number(c) < width) sheet.getRange(startRow, Number(c) + 1, n, 1).setFormulaR1C1(info.srcFormulas[c]);
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -531,9 +582,13 @@ function analyzeUpload_(newDataArray, targetSheetName) {
   // 헤더명이 2개 이상 일치하면 이름 매칭 사용, 그렇지 않으면(제목줄이 없는 단순 엑셀 등) 기존 순서 매칭으로 대체
   const useNameMapping = nameMatchCount >= 2;
 
+  // 시트에 수식이 걸린 열(적용환율, 원화환산, 잔액 등)은 시트가 계산하므로 엑셀 값은 무시합니다. (값으로 덮어쓰면 수식이 사라짐)
+  const layout = sheetLayoutInfo_(sheet, sheetHeaders.length, existingData);
+
   // 이번 업로드가 실제로 값을 채우는 열(A열 제외). 비교/덮어쓰기는 이 열들만 대상으로 합니다.
   const providedIdx = [];
   for (let s = 1; s < sheetHeaders.length; s++) {
+    if (layout.formulaCols[s]) continue;
     if (!useNameMapping || colMap[s] !== -1) providedIdx.push(s);
   }
 
@@ -615,6 +670,7 @@ function analyzeUpload_(newDataArray, targetSheetName) {
 
     if (useNameMapping) {
       for (let s = 1; s < sheetHeaders.length; s++) {
+        if (layout.formulaCols[s]) continue;
         const excelIdx = colMap[s];
         if (excelIdx !== -1 && excelIdx < excelRow.length) {
           let val = excelRow[excelIdx];
@@ -626,7 +682,7 @@ function analyzeUpload_(newDataArray, targetSheetName) {
       // 제목줄이 시트 헤더와 매칭되지 않을 때의 대체 로직: 엑셀 0번째 칸부터 순서대로 B열부터 채움
       for (let j = 0; j < excelRow.length; j++) {
         let targetIdx = j + 1;
-        if (targetIdx < sheetHeaders.length) {
+        if (targetIdx < sheetHeaders.length && !layout.formulaCols[targetIdx]) {
           let val = excelRow[j];
           alignedRow[targetIdx] = (typeof val === 'string') ? val.trim() : val;
         }
