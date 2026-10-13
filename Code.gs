@@ -182,7 +182,11 @@ function saveMultiData(data, targetSheetName, mode) {
         }
         if (lastRow <= headerRowIdx + 1) continue;
         const allowed = getAllowedValuesForColumn_(sheet, i + 1, lastRow);
-        if (allowed && allowed.indexOf(v) === -1) errors.push(`${colLabel(i)}: '${v}'은(는) 선택 가능한 목록에 없습니다.`);
+        if (allowed && allowed.indexOf(v) === -1) {
+          const canon = canonicalAllowed_(allowed, v);
+          if (canon) rowData[i] = canon;
+          else errors.push(`${colLabel(i)}: '${v}'은(는) 선택 가능한 목록에 없습니다.`);
+        }
       }
       if (errors.length) throw new Error('입력값을 확인해주세요:\n- ' + errors.join('\n- '));
     }
@@ -317,11 +321,13 @@ function codeAllowedValues_(targetSheetName, headerName) {
   return key ? m[key] : null;
 }
 
-// 대소문자/공백 차이("fedex", "Fed Ex")는 표준 표기("FedEx")로 맞춥니다. 맞는 값이 없으면 null.
+// 대소문자/공백 차이("fedex", "Fed Ex", "GIX-1(S1)" ↔ "GIX-1 (S1)")는 목록의 표준 표기로 맞춥니다.
+// 맞는 항목이 정확히 하나일 때만 보정하고, 없거나 여러 개면 null.
 function canonicalAllowed_(list, v) {
   const n = x => String(x).toLowerCase().replace(/\s+/g, '');
   const t = n(v);
-  return list.find(x => n(x) === t) || null;
+  const hits = list.filter(x => n(x) === t);
+  return hits.length === 1 ? hits[0] : null;
 }
 
 // 탭의 DEDUPE_KEYS 정의를 시트 헤더 기준 "키 열 인덱스 배열"로 바꿉니다. 키가 없는 탭이면 null.
@@ -705,6 +711,7 @@ function analyzeUpload_(newDataArray, targetSheetName) {
   let invalidCount = 0;
   let identicalCount = 0;
   let alreadyPendingCount = 0;
+  let normalizedCount = 0;
 
   // 이미 '_검토대기'에 '대기' 상태로 올라가 있는 충돌(같은 탭/행/새값)은 재업로드 때 또 쌓지 않습니다.
   const pendingKeys = new Set();
@@ -772,9 +779,10 @@ function analyzeUpload_(newDataArray, targetSheetName) {
     for (let s = 1; s < sheetHeaders.length; s++) {
       const allowed = allowedValuesByCol[s];
       let val = alignedRow[s];
-      if (allowed && codeListCols[s] && val !== "") {
+      if (allowed && val !== "" && allowed.indexOf(val) === -1) {
+        // 목록에 정확히 없어도 띄어쓰기/대소문자만 다른 경우는 목록의 표기로 보정합니다.
         const canon = canonicalAllowed_(allowed, val);
-        if (canon) { alignedRow[s] = canon; val = canon; }
+        if (canon) { alignedRow[s] = canon; val = canon; normalizedCount++; }
       }
       if (allowed && val !== "" && allowed.indexOf(val) === -1) {
         invalidReason = `${sheetHeaders[s]} 값 '${val}'이(가) 허용 목록에 없음` + (codeListCols[s] ? ` (허용: ${allowed.join(', ')})` : '');
@@ -876,7 +884,7 @@ function analyzeUpload_(newDataArray, targetSheetName) {
   return {
     ss, sheet, targetSheetName, sheetHeaders, existingData, providedIdx, policy, dedupeIdx, headerRowIdx,
     rowsToAppend, rowsToUpdate, rowsToFill, conflicts,
-    invalidRows, invalidCount, blankCount, identicalCount, alreadyPendingCount, totalRows: newDataArray.length,
+    invalidRows, invalidCount, blankCount, identicalCount, alreadyPendingCount, normalizedCount, totalRows: newDataArray.length,
     MAX_REPORTED,
   };
 }
@@ -899,6 +907,7 @@ function previewExcelUpload(newDataArray, targetSheetName) {
     conflictCount: plan.conflicts.length,
     identicalCount: plan.identicalCount,
     alreadyPendingCount: plan.alreadyPendingCount,
+    normalizedCount: plan.normalizedCount,
     invalidCount: plan.invalidCount,
     blankCount: plan.blankCount,
     keyInfo: (function() {
@@ -931,7 +940,7 @@ function uploadExcelData(newDataArray, targetSheetName) {
 
   return withLock_(function() {
     const plan = analyzeUpload_(newDataArray, targetSheetName);
-    const { rowsToAppend, rowsToUpdate, rowsToFill, conflicts, invalidRows, invalidCount, blankCount, identicalCount, alreadyPendingCount, MAX_REPORTED } = plan;
+    const { rowsToAppend, rowsToUpdate, rowsToFill, conflicts, invalidRows, invalidCount, blankCount, identicalCount, alreadyPendingCount, normalizedCount, MAX_REPORTED } = plan;
 
     if (rowsToAppend.length === 0 && rowsToUpdate.length === 0 && rowsToFill.length === 0 && conflicts.length === 0 && identicalCount === 0 && alreadyPendingCount === 0) {
       const reasonMsg = invalidRows.length
@@ -992,6 +1001,7 @@ function uploadExcelData(newDataArray, targetSheetName) {
       + (conflicts.length > 0 ? `, 값이 달라 덮어쓰지 않은 ${conflicts.length}건은 '${LOG_SHEETS.review.name}' 탭에 보관` : '')
       + (alreadyPendingCount > 0 ? `, 이미 검토 대기 중인 ${alreadyPendingCount}건은 중복 등록하지 않음` : '')
       + (identicalCount > 0 ? `, 이미 동일한 ${identicalCount}건 건너뜀` : '')
+      + (normalizedCount > 0 ? `, 드롭다운 표기(띄어쓰기/대소문자) 보정 ${normalizedCount}칸` : '')
       + (invalidCount > 0 ? `, 제외 ${invalidCount}건(값 오류)` : '')
       + ` · 빈 행 ${blankCount}개 제외`;
     if (invalidRows.length) {
