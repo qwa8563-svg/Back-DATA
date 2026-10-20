@@ -399,10 +399,6 @@ const LOG_SHEETS = {
       sh.getRange(2, 5, 2000, 1).setDataValidation(rule);
     },
   },
-  sync: {
-    name: '_채권동기화로그',
-    headers: ['실행시각', '대상 탭', '원본 읽은 행', '부품 채권 행', '결과'],
-  },
   deleted: {
     name: '_삭제로그',
     headers: ['삭제시각', '작업자', '탭', '원래 행번호', '중복 키', '삭제된 행 값 (A열부터 순서대로 →)'],
@@ -447,10 +443,7 @@ function appendLogRows_(sh, rows) {
   sh.getRange(sh.getLastRow() + 1, 1, padded.length, width).setValues(padded);
 }
 
-// 자동 동기화처럼 사람이 실행하지 않는 작업은 작업자 이름을 직접 지정합니다. (시간 트리거에서는 이메일이 비어 있음)
-let actorOverride_ = null;
 function currentUser_() {
-  if (actorOverride_) return actorOverride_;
   try {
     return Session.getActiveUser().getEmail() || '(확인 불가)';
   } catch (e) {
@@ -1403,150 +1396,4 @@ function backfillNoFormulas(targetSheetName) {
   const msg = `완료: A열(No.) 수식을 ${filledCount}개 행에 채워 넣었습니다.`;
   Logger.log(msg);
   return msg;
-}
-
-
-// ---------------------------------------------------------------------------
-// 주간회의록 시트 → [M] 채권 / [D] 채권 자동 동기화 ("부품" 채권만)
-//  - 원본: 주간회의록 시트의 '7-2. 메디칼 채권 미회수 상황'(→ [M] 채권), '7-1. 덴탈 채권 미회수 상황'(→ [D] 채권)
-//  - 조건: N열(모델 및 수량)에 "부품", "SPARE PART(S)"가 들어 있는 행 (대소문자·띄어쓰기 무시)
-//  - 통화 기호($, €, ￥)가 없는 행(덴탈의 천원 단위 KRW 행)은 제외합니다.
-//  - 시트 반영은 엑셀 업로드와 같은 경로(uploadExcelData)를 써서, 중복 판단/덮어쓰기/수식 열 보호/_변경이력 기록이 똑같이 적용됩니다.
-//    채권 탭은 '덮어쓰기' 정책이라 이미 있는 건의 입금액·잔액·입금예정일·연체여부·비고는 최신 값으로 갱신됩니다.
-//  - 원본에서 사라진 행은 지우지 않습니다.
-//  - 사용법: Apps Script 편집기에서 installReceivableSyncTrigger()를 한 번 실행하면 매일 아침 자동 실행됩니다.
-//            지금 바로 돌려 보려면 syncPartsReceivables()를 실행하세요. 결과는 '_채권동기화로그' 탭에 남습니다.
-// ---------------------------------------------------------------------------
-const RECEIVABLE_SYNC = {
-  sourceId: '1X4aYpEk-zJpdU37vPNSBHcnTQVw3x4E09C1K6NxdPDU',
-  jobs: [
-    { target: '[M] 채권', sourceGid: 1044151971, label: '7-2. 메디칼 채권 미회수 상황' },
-    { target: '[D] 채권', sourceGid: 1745860698, label: '7-1. 덴탈 채권 미회수 상황' },
-  ],
-  uploadHeaders: ['채널구분', '법인/거래처', '국가', '통화', '청구금액', '입금액', '잔액', '발송일', '입금예정일', '연체여부', '비고'],
-  syncHour: 8,
-};
-
-function recvText_(v) {
-  return (v === null || v === undefined) ? '' : String(v).trim();
-}
-
-// "26,218" / "22,568.65" / 1200 / "$ 1,000" → 숫자. 비어 있거나 숫자가 아니면 null
-function recvNum_(v) {
-  if (typeof v === 'number') return isFinite(v) ? v : null;
-  const s = recvText_(v).replace(/[,\s$€￥¥₩]/g, '');
-  if (!s || !/^-?\d+(\.\d+)?$/.test(s)) return null;
-  return Number(s);
-}
-
-// Date 객체 또는 "26-1-21", "25/5/26", "2026-04-01" → 'yyyy-MM-dd'. 'installment' 등 날짜가 아니면 ''
-function recvDate_(v, tz) {
-  if (v instanceof Date) return Utilities.formatDate(v, tz, 'yyyy-MM-dd');
-  const m = recvText_(v).match(/^(\d{2}|\d{4})\s*[-\/.]\s*(\d{1,2})\s*[-\/.]\s*(\d{1,2})\.?$/);
-  if (!m) return '';
-  const y = m[1].length === 2 ? 2000 + Number(m[1]) : Number(m[1]);
-  const mo = Number(m[2]), d = Number(m[3]);
-  if (mo < 1 || mo > 12 || d < 1 || d > 31) return '';
-  return `${y}-${('0' + mo).slice(-2)}-${('0' + d).slice(-2)}`;
-}
-
-function isPartsText_(s) {
-  const t = recvText_(s).toLowerCase().replace(/\s+/g, '');
-  return t.indexOf('부품') !== -1 || t.indexOf('sparepart') !== -1;
-}
-
-const RECV_CURRENCY_SYMBOLS_ = ['$', '€', '￥', '¥', '₩'];
-
-// 원본 표(B~O열)를 읽어 "부품" 채권 행 목록을 만듭니다. (시트를 읽기만 하는 순수 함수 — 테스트하기 쉽게 분리)
-//  열: C 법인코드/구분, D 거래처, E 국가, F 통화기호, G 금액, I 입금액, K 잔액, L 선적(출하)일, M 입금예정일, N 모델 및 수량, O 내용
-//  표 구조: 법인코드(C)·거래처(D)·국가(E)는 블록의 첫 줄에만 적혀 있어서 아래 줄들은 위 값을 이어받습니다.
-function parseReceivableRows_(values, tz, today) {
-  const C = 2, D = 3, E = 4, F = 5, G = 6, I = 8, K = 10, L = 11, M = 12, N = 13, O = 14;
-  const hasLayout = values.some(r => recvText_(r[D]) === '거래처' && recvText_(r[N]).replace(/\s+/g, '') === '모델및수량');
-  if (!hasLayout) {
-    throw new Error("원본 시트에서 헤더(D열 '거래처' / N열 '모델 및 수량')를 찾지 못했습니다. 원본 표의 열 위치가 바뀐 것 같습니다.");
-  }
-  let channel = '', client = '', country = '';
-  let scanned = 0;
-  const out = [];
-  values.forEach(r => {
-    const c = recvText_(r[C]), d = recvText_(r[D]), e = recvText_(r[E]), f = recvText_(r[F]);
-    const b = recvText_(r[1]);
-    if (/total/i.test(b) || /total/i.test(d) || /^(USD|EUR|JPY|KRW|CNY)$/i.test(f)) return;   // 소계/총계 줄
-    if (c && c !== '법인' && c !== '구분') channel = c;
-    if (d === '거래처') return;                                                                 // 반복되는 헤더 줄
-    if (d) { client = d; country = e; } else if (e) { country = e; }
-    if (RECV_CURRENCY_SYMBOLS_.indexOf(f) === -1) return;                                       // 통화 기호 없는 행(천원 단위 KRW 등)은 제외
-    const claim = recvNum_(r[G]);
-    if (claim === null) return;
-    scanned++;
-    if (!isPartsText_(r[N])) return;
-    const paid = recvNum_(r[I]) || 0;
-    let bal = recvNum_(r[K]);
-    if (bal === null) bal = claim - paid;
-    const ship = recvDate_(r[L], tz), due = recvDate_(r[M], tz);
-    const note = [recvText_(r[N]).replace(/\s*\n\s*/g, ' '), recvText_(r[O]).replace(/\s*\n\s*/g, ' ')].filter(x => x).join(' / ');
-    out.push([channel, client, country, f, claim, paid, bal, ship, due, (bal > 0 && due && due < today) ? '연체' : '정상', note]);
-  });
-  out.scanned = scanned;
-  return out;
-}
-
-function syncOneReceivable_(src, job, tz, today) {
-  const sh = src.getSheets().filter(s => s.getSheetId() === job.sourceGid)[0];
-  if (!sh) throw new Error(`원본 탭(gid ${job.sourceGid}, '${job.label}')을 찾지 못했습니다. 탭이 삭제됐거나 주소가 바뀌었는지 확인하세요.`);
-  const values = sh.getRange(1, 1, sh.getLastRow(), Math.max(sh.getLastColumn(), 15)).getValues();
-  const rows = parseReceivableRows_(values, tz, today);
-  if (!rows.length) return { read: values.length, parts: 0, message: '부품 채권 행이 없어 반영할 내용이 없습니다.' };
-  const msg = uploadExcelData([RECEIVABLE_SYNC.uploadHeaders].concat(rows), job.target);
-  return { read: values.length, parts: rows.length, message: msg };
-}
-
-function syncPartsReceivables() {
-  actorOverride_ = '자동 동기화(주간회의록)';
-  const tz = spreadsheetTz_();
-  const today = Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd');
-  const results = [];
-  try {
-    let src;
-    try {
-      src = SpreadsheetApp.openById(RECEIVABLE_SYNC.sourceId);
-    } catch (e) {
-      throw new Error('주간회의록 시트를 열 수 없습니다. 이 스크립트를 실행하는 계정에 해당 시트의 보기 권한이 있는지 확인하세요. (' + e.message + ')');
-    }
-    const logSheet = getOrCreateLogSheet_(openSpreadsheet_(), LOG_SHEETS.sync);
-    RECEIVABLE_SYNC.jobs.forEach(job => {
-      let row;
-      try {
-        const r = syncOneReceivable_(src, job, tz, today);
-        row = [new Date(), job.target, r.read, r.parts, String(r.message).split('\n')[0]];
-        results.push(`${job.target}: ${row[4]}`);
-      } catch (e) {
-        row = [new Date(), job.target, '', '', '오류: ' + e.message];
-        results.push(`${job.target}: 오류 - ${e.message}`);
-      }
-      appendLogRows_(logSheet, [row]);
-    });
-  } finally {
-    actorOverride_ = null;
-  }
-  const summary = results.join('\n');
-  Logger.log(summary);
-  return summary;
-}
-
-// 매일 아침 syncHour시에 syncPartsReceivables를 실행하는 트리거를 하나만 만듭니다. (이미 있으면 다시 만들지 않음)
-function installReceivableSyncTrigger() {
-  const exists = ScriptApp.getProjectTriggers().some(t => t.getHandlerFunction() === 'syncPartsReceivables');
-  if (exists) return '이미 자동 동기화 트리거가 설치되어 있습니다.';
-  ScriptApp.newTrigger('syncPartsReceivables').timeBased().everyDays(1).atHour(RECEIVABLE_SYNC.syncHour).create();
-  return `매일 ${RECEIVABLE_SYNC.syncHour}시 경에 자동 동기화하도록 설치했습니다.`;
-}
-
-function removeReceivableSyncTrigger() {
-  let n = 0;
-  ScriptApp.getProjectTriggers().forEach(t => {
-    if (t.getHandlerFunction() === 'syncPartsReceivables') { ScriptApp.deleteTrigger(t); n++; }
-  });
-  return `자동 동기화 트리거 ${n}개를 삭제했습니다.`;
 }
