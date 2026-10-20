@@ -135,6 +135,28 @@ function isPartsText_(s) {
 
 const CURRENCY_SYMBOLS = ['$', '€', '￥', '¥', '₩'];
 
+// 제품과 부품이 한 청구서에 같이 나간 건은 "부품" 뒤에 적힌 금액만 우리 채권으로 잡습니다.
+//  예) "P2 50대 $52,250, + D테크부품 $1,505.75" → 1505.75 / "P3D 2대, P+7대외 Spare Part(1,140 USD)" → 1140
+//  부품 키워드 바로 뒤(6자 이내)에 통화 기호($ € ￥ ¥ ₩) 또는 단위(USD EUR JPY KRW 원 달러 유로 엔)가 붙은 금액이 있거나,
+//  "부품(9,830)"처럼 괄호 안에 금액만 적힌 경우에만 인정합니다. ("부품 2대" 같은 수량 표기는 무시)
+function extractPartsAmount_(text) {
+  const t = recvText_(text);
+  const kw = /부품|spare\s*parts?/ig;
+  let m, found = null;
+  while ((m = kw.exec(t)) !== null) {
+    const rest = t.slice(m.index + m[0].length);
+    const a = rest.match(/^[^0-9$€￥¥₩]{0,6}?([$€￥¥₩])?\s*(\d[\d,]*(?:\.\d+)?)\s*(USD|EUR|JPY|KRW|원|달러|유로|엔)?/i);
+    let n = null;
+    if (a && (a[1] || a[3])) n = Number(a[2].replace(/,/g, ''));
+    else {
+      const b = rest.match(/^\s*\(\s*(\d[\d,]*(?:\.\d+)?)\s*\)/);     // "부품(9,830)" — 통화 표시 없이 괄호 안에 금액만 있는 경우 (통화는 행의 통화)
+      if (b) n = Number(b[1].replace(/,/g, ''));
+    }
+    if (n !== null && isFinite(n) && n > 0) found = n;
+  }
+  return found;
+}
+
 // 반환: UPLOAD_HEADERS 순서의 행 배열 (+ 통화 기호가 있는 데이터 행 수는 배열의 scanned 속성)
 function parseReceivableRows_(values, tz, today) {
   const C = 2, D = 3, E = 4, F = 5, G = 6, I = 8, K = 10, L = 11, M = 12, N = 13, O = 14;
@@ -157,12 +179,23 @@ function parseReceivableRows_(values, tz, today) {
     if (claim === null) return;
     scanned++;
     if (!isPartsText_(r[N])) return;
-    const paid = recvNum_(r[I]) || 0;
+    let paid = recvNum_(r[I]) || 0;
     let bal = recvNum_(r[K]);
     if (bal === null) bal = claim - paid;
     const ship = recvDate_(r[L], tz), due = recvDate_(r[M], tz);
-    const note = [recvText_(r[N]).replace(/\s*\n\s*/g, ' '), recvText_(r[O]).replace(/\s*\n\s*/g, ' ')].filter(x => x).join(' / ');
-    out.push([channel, client, country, f, claim, paid, bal, ship, due, (bal > 0 && due && due < today) ? '연체' : '정상', note]);
+    const noteParts = [recvText_(r[N]).replace(/\s*\n\s*/g, ' '), recvText_(r[O]).replace(/\s*\n\s*/g, ' ')].filter(x => x);
+    // 제품과 함께 나간 건: 부품 금액만 반영. 입금액/잔액은 청구금액 대비 비율로 나눕니다. (전액 입금/전액 미입금이면 그대로 부품 금액)
+    let claimOut = claim;
+    const partsAmt = extractPartsAmount_(r[N]);
+    if (partsAmt !== null && partsAmt < claim) {
+      const origClaim = claim;
+      claimOut = partsAmt;
+      if (bal <= 0) { paid = partsAmt; bal = 0; }
+      else if (paid <= 0) { paid = 0; bal = partsAmt; }
+      else { paid = Math.round(paid * partsAmt / origClaim * 100) / 100; bal = Math.round((partsAmt - paid) * 100) / 100; }
+      noteParts.push(`부품분만 반영(원 청구 ${origClaim.toLocaleString('en-US')} 중)`);
+    }
+    out.push([channel, client, country, f, claimOut, paid, bal, ship, due, (bal > 0 && due && due < today) ? '연체' : '정상', noteParts.join(' / ')]);
   });
   out.scanned = scanned;
   return out;
